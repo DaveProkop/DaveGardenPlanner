@@ -1,21 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { DEFAULT_COLOR } from '@/constants/colorPresets'
 
 export const useUiStore = defineStore('ui', () => {
-  const selectedObjectId = ref(null)
+  const selectedId      = ref(null)
+  const activeTool      = ref('select')   // 'select' | 'rect' | 'polygon'
+  const activeColor     = ref(DEFAULT_COLOR)
   const showPlotSettings = ref(false)
 
-  function selectObject(id) {
-    selectedObjectId.value = id
-  }
+  function selectObject(id) { selectedId.value = id }
+  function deselect()       { selectedId.value = null }
+  function setTool(tool)    { activeTool.value = tool }
+  function setColor(color)  { activeColor.value = color }
 
-  function deselect() {
-    selectedObjectId.value = null
-  }
-
-  function togglePlotSettings() {
-    showPlotSettings.value = !showPlotSettings.value
-  }
-
-  return { selectedObjectId, showPlotSettings, selectObject, deselect, togglePlotSettings }
+  return { selectedId, activeTool, activeColor, showPlotSettings, selectObject, deselect, setTool, setColor }
 })

@@ -83,6 +83,12 @@ async function handleImport() {
       ↪ Vpřed
     </button>
 
+    <!-- Aktivní nástroj (vizuální indikátor) -->
+    <div class="w-px h-5 bg-garden-500 mx-1" />
+    <span class="text-garden-200 text-xs">
+      {{ uiStore.activeTool === 'select' ? '↖ Výběr' : uiStore.activeTool === 'rect' ? '⬜ Obdélník' : '⬡ Polygon' }}
+    </span>
+
     <div class="flex-1" />
 
     <!-- Feedback messages -->
