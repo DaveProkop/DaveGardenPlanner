@@ -31,23 +31,31 @@ src/
 ├── style.css                        # Tailwind imports
 │
 ├── constants/
-│   └── objectTypes.js               # Definice všech typů objektů (barva, tvar, rozměry)
+│   └── objectTypes.js               # Definice typů objektů (barva, kategorie, doporučený nástroj, textureKey)
 │
 ├── stores/
-│   ├── gardenStore.js               # Hlavní state: plot, objects, undo/redo, autosave
-│   └── uiStore.js                   # UI state: vybraný objekt, dialogy
+│   ├── gardenStore.js               # Hlavní state: shapes, undo/redo, autosave (žádný pevný "pozemek")
+│   └── uiStore.js                   # UI state: vybraný objekt, aktivní nástroj/barva/textura/typ (preset)
 │
 ├── composables/
 │   └── useStorage.js                # Export/import JSON souboru
 │
+├── utils/
+│   ├── shapes.js                    # ellipsePoints() — aproximace kruhu/elipsy mnohoúhelníkem
+│   ├── textures.js                  # getTexture(color, key) — procedurální dlaždice (Konva fillPatternImage), cachované
+│   └── grid.js                      # snapValue()/snapStagePos() — přichytávání k mřížce (kreslení i tažení)
+│
 └── components/
-    ├── toolbar/AppToolbar.vue       # Horní lišta: název, pozemek, undo/redo, save/load
+    ├── toolbar/AppToolbar.vue       # Horní lišta: mřížka/přichytávání/hustota, undo/redo, kopírovat/vložit, aktivní nástroj, autosave indikátor, save/load
     ├── panels/
-    │   ├── ObjectLibrary.vue        # Levý panel: seznam objektů k přidání
-    │   └── PropertyEditor.vue      # Pravý panel: editace vybraného objektu
+    │   ├── ToolPanel.vue            # Levý panel: nástroje (Výběr/Přesun/Obdélník/Kruh-Elipsa/Polygon/Text) + typy objektů podle kategorií, barva
+    │   └── PropertyEditor.vue       # Pravý panel: editace vybraného tvaru (název/text, barva, textura, rozměry nebo velikost textu, poznámky, geometrie)
     ├── canvas/
-    │   ├── GardenCanvas.vue         # Konva stage: grid, panning, zoom, klávesnice
-    │   └── GardenObject.vue         # Jeden objekt na canvas (Rect + Text + Transformer)
+    │   ├── GardenCanvas.vue         # Konva stage: mřížka (viditelná oblast), panning, zoom+měřítko, kreslení všech nástrojů, klávesnice (vč. Ctrl+C/V)
+    │   ├── GardenObject.vue         # Jeden tvar na canvas — v-line polygon (texturou/barvou), nebo v-text pro kind:'text'
+    │   ├── VertexHandles.vue        # Úchyty pro tažení jednotlivých vrcholů (obecné polygony/obdélníky)
+    │   ├── EllipseHandles.vue       # 4 úchyty na krajích poloos — protažení šířky/výšky, tvar zůstává vždy elipsa/kruh
+    │   └── TextHandles.vue          # Úchyt pro živé zvětšení/zmenšení textu (fontSize)
     └── UpdateBanner.vue             # PWA notifikace nové verze
 ```
 
@@ -55,33 +63,30 @@ src/
 
 ## Datový model (JSON soubor)
 
+Od v1.1.0 jsou objekty freeform polygony (ne typované obdélníky s `width`/`height`/`rotation`):
+
 ```json
 {
-  "version": "1.0.0",
-  "savedAt": "2026-07-12T10:00:00.000Z",
-  "plot": {
-    "name": "Moje zahrada",
-    "width": 20,
-    "height": 15
-  },
-  "objects": [
+  "version": "1.1.0",
+  "savedAt": "2026-08-15T10:00:00.000Z",
+  "shapes": [
     {
       "id": "uuid-v4",
-      "type": "house",
-      "x": 2.0,
-      "y": 2.0,
-      "width": 10.0,
-      "height": 8.0,
-      "rotation": 0,
-      "label": "Dům",
-      "color": "#A0785A",
-      "notes": ""
+      "name": "Strom",
+      "color": "#228B22",
+      "texture": "foliage",
+      "notes": "",
+      "points": [8, 6, 8.9, 6.35, 9.24, 7.24, 8.9, 8.12, 8, 8.47, 7.09, 8.12, 6.75, 7.24, 7.09, 6.35]
     }
   ]
 }
 ```
 
-Souřadnice a rozměry jsou vždy v **metrech**. Přepočet na pixely: `1 m = 50 px` (konstanta `PPM` v `GardenCanvas.vue`).
+Žádný `plot` — pozemek jako pevná obdélníková definice byl odstraněn, plán nemá žádnou vnější hranici. `points` je plochý seznam `[x1,y1,x2,y2,...]` v **metrech**, vždy uzavřený polygon (kruh/elipsa nakreslená nástrojem Kruh/Elipsa je aproximovaná 8úhelníkem — `ellipsePoints()` v `utils/shapes.js`, záměrně málo vrcholů, ať jde tvar snadno ručně upravit tažením). Přepočet na pixely: `1 m = 50 px` (konstanta `PPM` v `GardenCanvas.vue`). Rozměry v pravém panelu (Šířka/Výška) se počítají z bounding boxu bodů a při editaci se jím celý tvar přeškáluje (`bbox`/`commitSize()` v `PropertyEditor.vue`).
+
+`texture` je klíč do `utils/textures.js` (`grass`/`brick`/`wood`/`stone`/`water`/`foliage`/`sand`/`glass`) nebo `null` pro tvary nakreslené bez vybraného typu objektu (ty mají jen plochou barvu). Texturu vykresluje `GardenObject.vue` jako `fillPatternImage` — dlaždice se generuje z aktuální barvy tvaru, takže respektuje i vlastní barvu z color pickeru.
+
+**`kind`** rozlišuje speciální chování tvaru: `null` = obecný polygon/obdélník (plné úpravy vrcholů), `'ellipse'` = kruh/elipsa nakreslená nástrojem Kruh/Elipsa (8 bodů, upravuje se jen přes 4 úchyty na krajích poloos — viz `EllipseHandles.vue` — tvar tak zůstává vždy skutečnou elipsou), `'text'` = volný text (viz níže). U `kind:'text'` mají `points` jen **jeden bod** `[x,y]` (ukotvení, ne polygon) a přibývá pole **`fontSize`** (velikost v metrech); `name` je zároveň zobrazovaný text na plátně. **Jméno objektu se u ostatních tvarů (ne text) na plátně nezobrazuje** — je jen pro identifikaci v pravém panelu.
 
 ---
 
@@ -93,7 +98,23 @@ Souřadnice a rozměry jsou vždy v **metrech**. Přepočet na pixely: `1 m = 50
 | JSON soubor (DL)   | Tlačítko "💾 Uložit" — stáhne soubor    |
 | JSON soubor (UP)   | Tlačítko "📂 Načíst" — nahraje soubor   |
 
-Klíč v localStorage: `dave-garden-planner-v1`
+Klíč v localStorage: `dave-garden-planner-v2` (od v1.1.0 — nový klíč kvůli změně datového modelu na polygony; staré `-v1` uložené plány se nenačtou automaticky)
+
+`gardenStore.lastSavedAt` drží čas posledního úspěšného zápisu do localStorage (nastavuje se v `_autoSave()`). `AppToolbar.vue` z toho ukazuje trvalý štítek "Automatické ukládání" s tečkou, která na ~700 ms zezelená při každém uložení — vědomě BEZ odpočtu vteřin v textu (dřívější verze "Uloženo před X s" byla vyhodnocena jako rušivá).
+
+---
+
+## Mřížka, přichytávání a hustota
+
+Aplikace nemá žádnou definici "pozemku" s pevnými rozměry — kreslicí plocha je neomezená. Mřížka (`gridLines`/`rulerLabels` v `GardenCanvas.vue`) se proto nepočítá jednou dopředu, ale z aktuálně viditelné oblasti (`viewBounds`, odvozeno z pozice/zoomu stage a rozměru okna), takže vždy pokrývá celý canvas, ať uživatel odjede/přiblíží kamkoliv. Pozice stage (`stagePos`) se sleduje reaktivně přes `@dragmove` na `v-stage` (pan myší) a při každém zoomu (kolečko i tlačítka +/−). Osy x=0/y=0 jsou zvýrazněné a nesou popisky vzdálenosti po 5 m; počátek (0,0) je při prvním načtení vycentrovaný uprostřed obrazovky.
+
+**Hustota mřížky** (`uiStore.gridSize`, výběr v `AppToolbar.vue` z `GRID_SIZES = [0.25, 0.5, 1, 2, 5]` metrů) mění rozestup čar; hlavní (tmavší) čára je vždy každá 5. vedlejší.
+
+**Přichytávání k mřížce** (`uiStore.snapToGrid`, tlačítko "🧲 Přichytávání") lze zapnout/vypnout nezávisle na viditelnosti mřížky. Když je zapnuté, `utils/grid.js` zaokrouhluje na násobek `gridSize`:
+- při kreslení (`getMeterPos()` v `GardenCanvas.vue`) — přímo v metrech přes `snapValue()`,
+- při tažení celého objektu nebo úchytu (`GardenObject.vue`, `VertexHandles.vue`) — přes `snapStagePos()`, což je Konva `dragBoundFunc` počítající v absolutních (obrazovkových) souřadnicích s ohledem na aktuální pan/zoom stage.
+
+Text a úchyty pro elipsu/font se **nepřichytávají** (volný drag) — snap dává smysl jen pro geometrii vázanou na metry.
 
 ---
 
@@ -127,18 +148,26 @@ Aplikace je Progressive Web App s service workerem (`vite-plugin-pwa`).
 
 ---
 
-## Typy objektů
+## Typy objektů a kreslení — "select-then-draw"
 
-### Stavby
-`house`, `shed`, `garage`, `fence`, `path`, `pergola`, `terrace`
+Kategorie v levém panelu odpovídají typickému postupu plánování zahrady:
 
-### Rostliny
-`tree`, `shrub`, `bed`, `herb`, `vegetable`, `flower`
+| Kategorie          | Typy                                                              |
+|---------------------|--------------------------------------------------------------------|
+| Terén               | `lawn` (Trávník — kreslí se jako polygon, je to fakticky tvar pozemku/zahrady) |
+| Stavby              | `house`, `shed`, `garage`, `fence`, `pergola`                     |
+| Zpevněné plochy     | `path`, `terrace`, `parking`                                      |
+| Vodní plochy        | `pond`, `pool`                                                     |
+| Rostliny            | `tree`, `shrub`, `bed`, `herb`, `vegetable`, `flower`              |
+| Ostatní             | `compost`, `greenhouse`, `sandbox`                                 |
 
-### Ostatní
-`pond`, `compost`, `greenhouse`, `sandbox`
+Každý typ má: `id`, `label`, `color`, `category`, `defaultW`/`defaultH` (jen orientační hodnota v tooltipu), `shape` (doporučený nástroj — `rect`/`circle`/`polygon`), `icon`, `textureKey`. Stavby s obvykle nepravidelným půdorysem (`house`, `shed`, `garage`, `pergola`) mají `shape: 'polygon'`, takže se kreslí klikáním po vrcholech místo tažení obdélníku.
 
-Každý typ má: `id`, `label`, `color`, `category`, `defaultW`, `defaultH`, `shape` (`rect`/`circle`/`ellipse`), `icon`
+**Objekty se nepřidávají klikem hotové** — kliknutí na typ v panelu (`uiStore.selectObjectType()`) jen "nabije" aktivní barvu, texturu, výchozí název a přepne na odpovídající kreslicí nástroj (Obdélník/Kruh-Elipsa/Polygon). Uživatel pak tvar nakreslí sám tažením (obdélník, kruh/elipsa) nebo klikáním po vrcholech + Enter/dvojklik (polygon) — přesně na místo a s tvarem, jaký potřebuje. Po nakreslení objektu vybraného typu **zůstává stejný nástroj aktivní** (`uiStore.activePresetId` je nastavené), takže lze hned nakreslit další objekt stejného typu (např. víc stromů za sebou) — teprve ruční přepnutí na jiný nástroj/typ nebo Esc preset zruší (`uiStore.clearPreset()`). Bez vybraného typu (přímo přes nástroje Obdélník/Kruh/Polygon) vzniká generický tvar s plochou barvou a názvem "Objekt N".
+
+Rozměry lze kdykoliv doladit přesně v pravém panelu (pole Šířka/Výška v metrech) nebo tažením vrcholů na canvasu.
+
+**Kreslení přes existující tvary:** objekty jsou `draggable` jen v nástroji Výběr (`GardenObject.vue`, prop `draggable`), takže v kreslicích nástrojích lze bez obav kreslit i nad již existujícím tvarem (typicky nad trávníkem, který zabírá celou plochu) — nehrozí, že se místo nové kresby omylem přetáhne tvar pod kurzorem. Ze stejného důvodu je i výběr kliknutím (`@select`) v `GardenCanvas.vue` podmíněný `uiStore.activeTool === 'select'`, jinak by po nakreslení tvaru mohl Konva vlastní "click" syntézou (mousedown/mouseup nad stejným podkladovým tvarem) přebít výběr zpět na podkladový tvar.
 
 ---
 
@@ -148,9 +177,24 @@ Každý typ má: `id`, `label`, `color`, `category`, `defaultW`, `defaultH`, `sh
 |----------------|--------------------------|
 | Ctrl+Z         | Zpět (undo)              |
 | Ctrl+Y         | Vpřed (redo)             |
+| Ctrl+C         | Kopírovat vybraný objekt |
+| Ctrl+V         | Vložit zkopírovaný objekt (posunutý o 0,5 m, název + " (kopie)") |
 | Delete/Backspace | Smazat vybraný objekt  |
 | Mouse wheel    | Zoom in/out              |
-| Drag (canvas)  | Posun pohledu (pan)      |
+| Drag (canvas)  | Posun pohledu (pan) — v nástroji Výběr vždy, v ostatních nástrojích jen s podrženým mezerníkem |
+| Mezerník (podržet) | Dočasný posun plátna i uprostřed kreslení (obdélník/kruh/polygon) |
+| Enter / 2× klik | Uzavřít rozkreslený polygon |
+| Esc            | Zrušit kreslení, zpět na Výběr |
+
+**Úprava existujícího tvaru:** tažením malých bílých koleček na vrcholech (`VertexHandles.vue`) posuneš vrchol — během tažení se od jeho živé pozice ke dvěma sousedním (skutečným) vrcholům kreslí přerušované náhledové hrany s popiskem délky, takže je vidět, jak bude hrana vypadat, ne jen osamocený bod (samotný tvar se ale nedeformuje živě, jen na dragend — viz poznámka v paměti projektu o konfliktu s Konva DnD); tažením menších přerušovaných koleček uprostřed hrany (`gardenStore.insertVertex()`) do tvaru vložíš nový vrchol přesně tam, kam ho odtáhneš (stejný náhled hran); dvojklik na vrchol jej smaže (`gardenStore.removeVertex()`, min. 3 vrcholy musí zůstat). Texturu existujícího objektu lze kdykoliv změnit v pravém panelu (sekce "Textura" pod barvou) — náhledy dlaždic se generují živě v aktuální barvě tvaru.
+
+**Přesun celého objektu** je od teď samostatný nástroj **✥ Přesun** (`uiStore.activeTool === 'move'`), ne automatická vlastnost nástroje Výběr — `GardenObject.vue` je `draggable` jen v tomto nástroji, takže pouhé kliknutí/výběr objektu ve Výběru už ho nemůže omylem odtáhnout. Výběr kliknutím funguje v obou (Výběr i Přesun).
+
+**Kruh/elipsa (`kind:'ellipse'`)** se needituje přes vrcholy — `EllipseHandles.vue` zobrazí jen 4 úchyty na krajích poloos (vpravo/vlevo/nahoře/dole). Vodorovný úchyt mění pouze `rx`, svislý pouze `ry` (`dragBoundFunc` zamyká druhou osu), takže tvar je matematicky vždy skutečnou elipsou/kruhem — nejde ho tažením zdeformovat do nepravidelného mnohoúhelníku. Živý náhled během tažení jde přes `previewPoints` prop na `GardenObject.vue` (stejný vzor jako `previewFontSize` u textu níže), do store se zapíše až na `dragend`.
+
+**Volný text (nástroj Text, `kind:'text'`)** — klik na plán vytvoří text s výchozím obsahem "Text" a rovnou ho vybere s focusem v poli "Text" v pravém panelu (to pole je u textu zároveň editor jeho obsahu — u ostatních tvarů se stejné pole jmenuje "Název objektu" a na plátně se nezobrazuje). `TextHandles.vue` zobrazí jeden úchyt v odhadované pravé dolní části textu (vzdálenost od kotvy ~úměrná délce textu); tažením se mění `fontSize`, živě promítané přes `previewFontSize` prop, do store zapsané na `dragend`. Přesun textu funguje stejně jako u ostatních tvarů (nástroj Přesun), barva textu = `shape.color`.
+
+**Kopírování/vkládání (Ctrl+C/V + tlačítka 📋/📄 v toolbaru)** — `uiStore.copyShape()` uloží hluboký klon vybraného tvaru (bez `id`) do `uiStore.clipboard`, takže vložení funguje i po smazání originálu. `gardenStore.pasteShape()` vytvoří novou kopii posunutou o 0,5 m v obou osách, s názvem `"<originál> (kopie)"`. **Vložení nezaostřuje pole Název** (na rozdíl od nově nakresleného tvaru), aby šlo opakovaně mačkat Ctrl+V bez nutnosti znovu klikat na plátno — viz `uiStore.focusNameTick` níže.
 
 ---
 
@@ -178,13 +222,17 @@ Každý typ má: `id`, `label`, `color`, `category`, `defaultW`, `defaultH`, `sh
 - PWA service worker + update notifikace
 - CI/CD na GitHub Pages
 
-### Etapa 2 — Plánované funkce
+### ✅ Etapa 2 (částečně) — hotovo
+- Snap-to-grid (přichytávání na mřížku) + volitelná hustota mřížky
+- Kopírování/vkládání objektů (Ctrl+C, Ctrl+V + tlačítka v toolbaru)
+- Volný text na plánu (přesun, živé zvětšení/zmenšení)
+- Měřítko na canvas (1m = vyznačená vzdálenost) — hotovo už dřív
+- Autosave indikátor v toolbaru
+
+### Etapa 2 — zbývající plánované funkce
 - Google Drive integrace (načíst/uložit z Drive)
-- Snap-to-grid (přichytávání na mřížku)
-- Kopírování/vkládání objektů (Ctrl+C, Ctrl+V)
 - Skupinový výběr (lasso nebo Shift+click)
 - Průhlednost (opacity) objektu
-- Měřítko na canvas (1m = vyznačená vzdálenost)
 - Export jako PNG/SVG obrázek
 - Více plánů (tabs)
 
@@ -201,3 +249,15 @@ Každý typ má: `id`, `label`, `color`, `category`, `defaultW`, `defaultH`, `sh
 | Datum      | Verze | Popis                                      |
 |------------|-------|--------------------------------------------|
 | 2026-07-12 | 1.0.0 | Etapa 1 — kompletní základní implementace  |
+| 2026-08-15 | 1.1.0 | Kreslení polygonem + volné pojmenování objektů (datový model přepsán na freeform `points`) |
+| 2026-08-15 | —     | Oprava: panel "Objekty" v `ToolPanel.vue` obnoven (rychlé přidání typových objektů vč. rostlin — v1.1.0 ho omylem nepropojil), přidána editace přesných rozměrů (Šířka/Výška v m) v `PropertyEditor.vue`. |
+| 2026-08-15 | —     | Grid toggle (▦ Mřížka v horní liště) + oprava pořadí vykreslování, které mřížku skrývalo pod podkladem pozemku. Měřítko + zoom tlačítka (−/+) dole uprostřed canvasu. |
+| 2026-08-15 | —     | Větší přestavba workflow: kategorie objektů podle postupu plánování (Terén→Stavby→Zpevněné plochy→Vodní plochy→Rostliny→Ostatní), nový typ Trávník/Parkoviště/Bazén, nástroj Kruh/Elipsa, "select-then-draw" místo klik-a-hotovo, procedurální textury (`utils/textures.js`) místo plochých barev, oprava draggable/výběru při kreslení nad existujícím tvarem. |
+| 2026-08-15 | —     | Odstraněna definice pozemku (`plot` state, dialog "Nastavení pozemku") — mřížka teď pokrývá celou (neomezenou) kreslicí plochu podle viditelné oblasti. Kruh/Elipsa nakreslí jen 8 vrcholů místo 24 (méně bodů k omylem posunutí). Dům/Chata-kůlna/Garáž/Pergola-altán se teď kreslí jako polygon, ne obdélník. |
+| 2026-08-15 | —     | Živý popisek délky rozkreslené úsečky u nástroje Polygon. Podržený mezerník = dočasný posun plátna i uprostřed kreslení (dřív šlo posouvat jen v nástroji Výběr). Nové úchyty uprostřed hran (`gardenStore.insertVertex()`) — tažením lze do existujícího tvaru přidat další vrchol, ne jen posouvat ty stávající. |
+| 2026-08-15 | —     | Oprava: `onStageDragMove` si při tažení vrcholu/objektu spletl bublající Konva event za pan stage a rozbil mřížku (viz paměť projektu). Dvojklik na vrchol jej smaže (`gardenStore.removeVertex()`, min. 3 vrcholy). Tažení vrcholu i mid-úchytu teď zobrazuje živé popisky délek obou sousedních hran. Nová sekce "Textura" v pravém panelu — texturu existujícího objektu lze kdykoliv změnit nezávisle na barvě. |
+| 2026-08-15 | —     | Tažení vrcholu teď kreslí přerušovanou náhledovou hranu ke dvěma sousedním vrcholům (dřív jen osamocený bod bez náznaku hrany). Nový samostatný nástroj ✥ Přesun pro přesun celého objektu — v nástroji Výběr už objekty nejdou přesunout omylem, jen vybrat/upravit vrcholy. |
+| 2026-08-15 | —     | Kruh/elipsa (`shape.kind === 'ellipse'`) už nejde rozšířit o další vrcholy (žádné mid-úchyty) — jen zvětšit/zmenšit přes pole Šířka/Výška nebo posunout stávající body. Na plátně přibyla trvalá nápověda k úpravě vybraného tvaru (dvojklik = smazat vrchol, tečkovaný úchyt = přidat vrchol) — dřív to nikde nebylo vysvětlené. Nevydáno jako nová verze — verzi je třeba zvýšit před dalším deployem. |
+| 2026-08-17 | 1.2.0 | Přichytávání k mřížce (zapnout/vypnout + volitelná hustota `GRID_SIZES`) — nový `utils/grid.js`. Přidány store soubory dostaly HMR podporu (`acceptHMRUpdate`) po zjištění, že úprava store souboru za běhu dev serveru nechá viset starou instanci bez nových polí (viz paměť projektu). |
+| 2026-08-17 | —     | Nový nástroj **Text** (`kind:'text'`) — volný popisek s vlastní `EllipseHandles`-podobnou logikou úchytu na zvětšení/zmenšení (`TextHandles.vue`, `fontSize`), přesouvatelný jako ostatní tvary. Jméno objektu se u ostatních tvarů přestalo zobrazovat na plátně (zůstává jen v panelu) — u textu ho nahradilo pole "Text", které JE zobrazovaný obsah. Autosave indikátor v toolbaru (`gardenStore.lastSavedAt`, tečka blikne při uložení). |
+| 2026-08-17 | —     | Kopírování/vkládání (Ctrl+C/V + tlačítka). Kruh/elipsa přestala jít deformovat tažením vrcholů — `EllipseHandles.vue` nahradil `VertexHandles.vue` čtyřmi úchyty na krajích poloos, tvar tak zůstává matematicky vždy elipsou (viz sekce výše). Oprava: výběr JAKÉHOKOLIV objektu (i klikem na existující) kradl focus do pole Název/Text (`watch(selectedId)` v `PropertyEditor.vue`), takže klávesové zkratky jako Ctrl+C/V přestaly fungovat — `uiStore.selectObject()` teď zaostřuje pole jen s explicitním `{ focusName: true }`, volaným jen při vytvoření NOVÉHO tvaru, ne při obyčejném výběru. |

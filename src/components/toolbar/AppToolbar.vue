@@ -1,7 +1,7 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useGardenStore } from '@/stores/gardenStore'
-import { useUiStore } from '@/stores/uiStore'
+import { useUiStore, GRID_SIZES } from '@/stores/uiStore'
 import { useStorage } from '@/composables/useStorage'
 
 const gardenStore  = useGardenStore()
@@ -9,23 +9,35 @@ const uiStore      = useUiStore()
 const { exportJSON, importJSON } = useStorage()
 const appVersion   = __APP_VERSION__
 
-const showPlotDialog = ref(false)
-const plotForm = ref({ ...gardenStore.plot })
 const importError = ref('')
 const importSuccess = ref(false)
 
-function openPlotDialog() {
-  plotForm.value = { ...gardenStore.plot }
-  showPlotDialog.value = true
+// Tečka u "Automatické ukládání" krátce blikne zeleně při každém uložení,
+// ať je vidět, že se opravdu něco děje (bez rušivého odpočtu vteřin v textu).
+const justSaved = ref(false)
+let pulseTimer = null
+watch(() => gardenStore.lastSavedAt, (savedAt) => {
+  if (!savedAt) return
+  justSaved.value = true
+  clearTimeout(pulseTimer)
+  pulseTimer = setTimeout(() => { justSaved.value = false }, 700)
+})
+
+const savedTooltip = computed(() => {
+  const t = gardenStore.lastSavedAt
+  return t ? `Naposledy uloženo do prohlížeče: ${t.toLocaleString('cs-CZ')}` : 'Zatím nic neuloženo'
+})
+
+function copySelected() {
+  const shape = gardenStore.getShape(uiStore.selectedId)
+  if (shape) uiStore.copyShape(shape)
 }
 
-function savePlot() {
-  gardenStore.updatePlot({
-    name:   plotForm.value.name,
-    width:  Math.max(1, parseFloat(plotForm.value.width)  || 20),
-    height: Math.max(1, parseFloat(plotForm.value.height) || 15),
-  })
-  showPlotDialog.value = false
+function pasteClipboard() {
+  if (!uiStore.clipboard) return
+  const id = gardenStore.pasteShape(uiStore.clipboard)
+  uiStore.selectObject(id)
+  uiStore.setTool('select')
 }
 
 async function handleImport() {
@@ -54,14 +66,35 @@ async function handleImport() {
 
     <div class="w-px h-5 bg-garden-500 mx-1" />
 
-    <!-- Plot settings -->
+    <!-- Grid toggle -->
     <button
-      class="flex items-center gap-1 px-2 py-1 rounded hover:bg-garden-600 text-xs transition-colors"
-      @click="openPlotDialog"
+      class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
+      :class="uiStore.showGrid ? 'bg-garden-500 hover:bg-garden-400' : 'hover:bg-garden-600 text-garden-200'"
+      title="Zobrazit/skrýt mřížku"
+      @click="uiStore.toggleGrid()"
     >
-      📐 Pozemek
-      <span class="text-garden-200">{{ gardenStore.plot.width }}×{{ gardenStore.plot.height }} m</span>
+      ▦ Mřížka
     </button>
+
+    <!-- Snap to grid toggle -->
+    <button
+      class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
+      :class="uiStore.snapToGrid ? 'bg-garden-500 hover:bg-garden-400' : 'hover:bg-garden-600 text-garden-200'"
+      title="Přichytávat kreslení a tažení k mřížce"
+      @click="uiStore.toggleSnap()"
+    >
+      🧲 Přichytávání
+    </button>
+
+    <!-- Grid density -->
+    <select
+      class="bg-garden-600 hover:bg-garden-500 text-white text-xs rounded px-1.5 py-1 border border-garden-500 focus:outline-none cursor-pointer"
+      title="Hustota mřížky"
+      :value="uiStore.gridSize"
+      @change="uiStore.setGridSize(Number($event.target.value))"
+    >
+      <option v-for="s in GRID_SIZES" :key="s" :value="s">{{ s }} m</option>
+    </select>
 
     <div class="w-px h-5 bg-garden-500 mx-1" />
 
@@ -83,10 +116,35 @@ async function handleImport() {
       ↪ Vpřed
     </button>
 
+    <div class="w-px h-5 bg-garden-500 mx-1" />
+
+    <!-- Kopírovat / Vložit -->
+    <button
+      :disabled="!uiStore.selectedId"
+      class="px-2 py-1 rounded text-xs hover:bg-garden-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+      title="Kopírovat vybraný objekt (Ctrl+C)"
+      @click="copySelected"
+    >
+      📋 Kopírovat
+    </button>
+    <button
+      :disabled="!uiStore.clipboard"
+      class="px-2 py-1 rounded text-xs hover:bg-garden-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+      title="Vložit zkopírovaný objekt (Ctrl+V)"
+      @click="pasteClipboard"
+    >
+      📄 Vložit
+    </button>
+
     <!-- Aktivní nástroj (vizuální indikátor) -->
     <div class="w-px h-5 bg-garden-500 mx-1" />
     <span class="text-garden-200 text-xs">
-      {{ uiStore.activeTool === 'select' ? '↖ Výběr' : uiStore.activeTool === 'rect' ? '⬜ Obdélník' : '⬡ Polygon' }}
+      <template v-if="uiStore.activePresetId">✏️ {{ uiStore.pendingLabel }}</template>
+      <template v-else-if="uiStore.activeTool === 'select'">↖ Výběr</template>
+      <template v-else-if="uiStore.activeTool === 'move'">✥ Přesun</template>
+      <template v-else-if="uiStore.activeTool === 'rect'">⬜ Obdélník</template>
+      <template v-else-if="uiStore.activeTool === 'circle'">⬭ Kruh/Elipsa</template>
+      <template v-else>⬡ Polygon</template>
     </span>
 
     <div class="flex-1" />
@@ -94,6 +152,15 @@ async function handleImport() {
     <!-- Feedback messages -->
     <span v-if="importSuccess" class="text-green-300 text-xs animate-pulse">✓ Načteno</span>
     <span v-if="importError"   class="text-red-300   text-xs">⚠ {{ importError }}</span>
+
+    <!-- Stav automatického ukládání do prohlížeče -->
+    <span class="flex items-center gap-1.5 text-garden-300 text-xs" :title="savedTooltip">
+      <span
+        class="w-1.5 h-1.5 rounded-full transition-colors duration-300"
+        :class="justSaved ? 'bg-green-400' : 'bg-garden-400'"
+      />
+      Automatické ukládání
+    </span>
 
     <!-- Save / Load -->
     <button
@@ -111,64 +178,4 @@ async function handleImport() {
       💾 Uložit
     </button>
   </header>
-
-  <!-- Plot settings dialog -->
-  <Teleport to="body">
-    <div
-      v-if="showPlotDialog"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
-      @click.self="showPlotDialog = false"
-    >
-      <div class="bg-white rounded-xl shadow-2xl w-80 p-5">
-        <h2 class="text-garden-700 font-semibold mb-4">Nastavení pozemku</h2>
-
-        <label class="block mb-3 text-sm">
-          <span class="text-gray-600 block mb-1">Název</span>
-          <input
-            v-model="plotForm.name"
-            type="text"
-            class="w-full border border-gray-300 rounded px-3 py-1.5 focus:outline-none focus:border-garden-500 text-sm"
-          />
-        </label>
-
-        <div class="grid grid-cols-2 gap-3 mb-4">
-          <label class="text-sm">
-            <span class="text-gray-600 block mb-1">Šířka (m)</span>
-            <input
-              v-model="plotForm.width"
-              type="number" min="1" max="500" step="0.5"
-              class="w-full border border-gray-300 rounded px-3 py-1.5 focus:outline-none focus:border-garden-500"
-            />
-          </label>
-          <label class="text-sm">
-            <span class="text-gray-600 block mb-1">Hloubka (m)</span>
-            <input
-              v-model="plotForm.height"
-              type="number" min="1" max="500" step="0.5"
-              class="w-full border border-gray-300 rounded px-3 py-1.5 focus:outline-none focus:border-garden-500"
-            />
-          </label>
-        </div>
-
-        <div class="text-xs text-gray-400 mb-4">
-          Plocha: {{ (parseFloat(plotForm.width || 0) * parseFloat(plotForm.height || 0)).toFixed(0) }} m²
-        </div>
-
-        <div class="flex gap-2 justify-end">
-          <button
-            class="px-4 py-1.5 rounded text-sm border border-gray-300 hover:bg-gray-50 transition-colors"
-            @click="showPlotDialog = false"
-          >
-            Zrušit
-          </button>
-          <button
-            class="px-4 py-1.5 rounded text-sm bg-garden-600 hover:bg-garden-500 text-white transition-colors"
-            @click="savePlot"
-          >
-            Uložit
-          </button>
-        </div>
-      </div>
-    </div>
-  </Teleport>
 </template>

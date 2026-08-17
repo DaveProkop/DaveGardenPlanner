@@ -8,8 +8,7 @@ export function useStorage() {
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
-    const name = (gardenStore.plot.name || 'zahrada').replace(/[^a-z0-9áčďéěíňóřšťúůýž ]/gi, '')
-    a.download = `${name}-${new Date().toISOString().slice(0, 10)}.json`
+    a.download = `zahrada-${new Date().toISOString().slice(0, 10)}.json`
     a.href = url
     a.click()
     setTimeout(() => URL.revokeObjectURL(url), 1000)

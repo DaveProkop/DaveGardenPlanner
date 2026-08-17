@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref, computed } from 'vue'
 import { v4 as uuidv4 } from 'uuid'
 
@@ -6,20 +6,17 @@ const AUTOSAVE_KEY = 'dave-garden-planner-v2'
 const MAX_HISTORY  = 50
 
 export const useGardenStore = defineStore('garden', () => {
-  const plot   = ref({ name: 'Moje zahrada', width: 20, height: 15 })
-  const shapes = ref([])  // [{ id, name, color, notes, points: [x1,y1,x2,y2,...] }] — metry
+  const shapes = ref([])  // [{ id, name, color, texture, notes, points: [x1,y1,x2,y2,...] }] — metry
 
   const history    = ref([])
   const historyIdx = ref(-1)
+  const lastSavedAt = ref(null) // Date posledního úspěšného auto-uložení do localStorage
 
   const canUndo = computed(() => historyIdx.value > 0)
   const canRedo = computed(() => historyIdx.value < history.value.length - 1)
 
   function _snapshot() {
-    const state = {
-      plot:   JSON.parse(JSON.stringify(plot.value)),
-      shapes: JSON.parse(JSON.stringify(shapes.value)),
-    }
+    const state = { shapes: JSON.parse(JSON.stringify(shapes.value)) }
     history.value = history.value.slice(0, historyIdx.value + 1)
     history.value.push(state)
     if (history.value.length > MAX_HISTORY) history.value.shift()
@@ -28,7 +25,6 @@ export const useGardenStore = defineStore('garden', () => {
   }
 
   function _apply(state) {
-    plot.value   = JSON.parse(JSON.stringify(state.plot))
     shapes.value = JSON.parse(JSON.stringify(state.shapes))
     _autoSave()
   }
@@ -36,14 +32,33 @@ export const useGardenStore = defineStore('garden', () => {
   function undo() { if (canUndo.value) { historyIdx.value--; _apply(history.value[historyIdx.value]) } }
   function redo() { if (canRedo.value) { historyIdx.value++; _apply(history.value[historyIdx.value]) } }
 
-  // --- Plot ---
-  function updatePlot(changes) { Object.assign(plot.value, changes); _snapshot() }
-
   // --- Shapes ---
   // points = flat array [x1,y1,x2,y2,...] v metrech
-  function addShape(points, name, color) {
+  // kind: null (obecný polygon) | 'ellipse' (nakresleno nástrojem Kruh/Elipsa —
+  // nejde do něj přidávat další vrcholy, jen měnit rozměry / posouvat stávající body)
+  function addShape(points, name, color, texture = null, kind = null) {
     const id = uuidv4()
-    shapes.value.push({ id, name, color, notes: '' , points: [...points] })
+    shapes.value.push({ id, name, color, texture, kind, notes: '', points: [...points] })
+    _snapshot()
+    return id
+  }
+
+  // Volný text na plánu — na rozdíl od ostatních tvarů nemá polygonová data
+  // (points = jediný ukotvující bod [x,y]) a místo plochy se zobrazuje jako
+  // popisek, jehož velikost určuje fontSize (v metrech).
+  function addText(x, y, name, color, fontSize) {
+    const id = uuidv4()
+    shapes.value.push({ id, name, color, texture: null, kind: 'text', notes: '', fontSize, points: [x, y] })
+    _snapshot()
+    return id
+  }
+
+  // Vloží kopii dříve zkopírovaného tvaru (viz uiStore.copyShape) mírně
+  // posunutou stranou, ať nesedí přesně na originálu.
+  function pasteShape(data, offset = 0.5) {
+    const id = uuidv4()
+    const points = data.points.map(v => v + offset)
+    shapes.value.push({ ...JSON.parse(JSON.stringify(data)), id, name: `${data.name} (kopie)`, points })
     _snapshot()
     return id
   }
@@ -74,6 +89,28 @@ export const useGardenStore = defineStore('garden', () => {
     _snapshot()
   }
 
+  // Vloží nový vrchol hned za vrchol s indexem afterIdx (0-based, wraparound
+  // pro uzavírací hranu poslední→první = vloží na konec pole)
+  function insertVertex(id, afterIdx, x, y) {
+    const s = shapes.value.find(s => s.id === id)
+    if (!s) return
+    const pts = [...s.points]
+    pts.splice((afterIdx + 1) * 2, 0, x, y)
+    s.points = pts
+    _snapshot()
+  }
+
+  // Smaže vrchol s indexem vtxIdx — tvar musí mít po smazání aspoň 3 vrcholy
+  function removeVertex(id, vtxIdx) {
+    const s = shapes.value.find(s => s.id === id)
+    if (!s) return
+    if (s.points.length / 2 <= 3) return
+    const pts = [...s.points]
+    pts.splice(vtxIdx * 2, 2)
+    s.points = pts
+    _snapshot()
+  }
+
   function removeShape(id) {
     shapes.value = shapes.value.filter(s => s.id !== id)
     _snapshot()
@@ -86,13 +123,11 @@ export const useGardenStore = defineStore('garden', () => {
     return {
       version:  __APP_VERSION__,
       savedAt:  new Date().toISOString(),
-      plot:     JSON.parse(JSON.stringify(plot.value)),
       shapes:   JSON.parse(JSON.stringify(shapes.value)),
     }
   }
 
   function loadFromData(data) {
-    if (data.plot)   plot.value   = { name: 'Moje zahrada', width: 20, height: 15, ...data.plot }
     if (data.shapes) shapes.value = data.shapes
     // Zpětná kompatibilita se starým formátem (v1 měl `objects`)
     else if (data.objects) shapes.value = []
@@ -100,7 +135,10 @@ export const useGardenStore = defineStore('garden', () => {
   }
 
   function _autoSave() {
-    try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(toData())) } catch { /* plná storage */ }
+    try {
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(toData()))
+      lastSavedAt.value = new Date()
+    } catch { /* plná storage */ }
   }
 
   function init() {
@@ -108,7 +146,7 @@ export const useGardenStore = defineStore('garden', () => {
     if (raw) {
       try {
         loadFromData(JSON.parse(raw))
-        history.value   = [{ plot: JSON.parse(JSON.stringify(plot.value)), shapes: JSON.parse(JSON.stringify(shapes.value)) }]
+        history.value   = [{ shapes: JSON.parse(JSON.stringify(shapes.value)) }]
         historyIdx.value = 0
         return
       } catch { /* poškozená data, začneme znovu */ }
@@ -117,10 +155,13 @@ export const useGardenStore = defineStore('garden', () => {
   }
 
   return {
-    plot, shapes,
+    shapes, lastSavedAt,
     canUndo, canRedo, undo, redo,
-    updatePlot,
-    addShape, updateShape, moveShape, updateVertex, removeShape, getShape,
+    addShape, addText, pasteShape, updateShape, moveShape, updateVertex, insertVertex, removeVertex, removeShape, getShape,
     toData, loadFromData, init,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useGardenStore, import.meta.hot))
+}
