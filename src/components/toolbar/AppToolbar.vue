@@ -1,16 +1,34 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useGardenStore } from '@/stores/gardenStore'
 import { useUiStore, GRID_SIZES } from '@/stores/uiStore'
-import { useStorage } from '@/composables/useStorage'
+import { useFileSourceStore } from '@/stores/fileSourceStore'
+import { isGoogleConfigured } from '@/config/google'
 
 const gardenStore  = useGardenStore()
 const uiStore      = useUiStore()
-const { exportJSON, importJSON } = useStorage()
+const fileSourceStore = useFileSourceStore()
 const appVersion   = __APP_VERSION__
+const driveConfigured = isGoogleConfigured()
 
-const importError = ref('')
-const importSuccess = ref(false)
+const openMenu   = ref(null) // null | 'open' | 'more'
+const fileSuccess = ref('')
+let successTimer = null
+
+function toggleMenu(name) { openMenu.value = openMenu.value === name ? null : name }
+function closeMenu() { openMenu.value = null }
+
+function onWindowClick(e) {
+  if (!e.target.closest('[data-menu]')) closeMenu()
+}
+onMounted(() => window.addEventListener('click', onWindowClick))
+onUnmounted(() => window.removeEventListener('click', onWindowClick))
+
+function flashSuccess(text) {
+  fileSuccess.value = text
+  clearTimeout(successTimer)
+  successTimer = setTimeout(() => { fileSuccess.value = '' }, 2500)
+}
 
 // Tečka u "Automatické ukládání" krátce blikne zeleně při každém uložení,
 // ať je vidět, že se opravdu něco děje (bez rušivého odpočtu vteřin v textu).
@@ -28,6 +46,12 @@ const savedTooltip = computed(() => {
   return t ? `Naposledy uloženo do prohlížeče: ${t.toLocaleString('cs-CZ')}` : 'Zatím nic neuloženo'
 })
 
+const saveTooltip = computed(() => {
+  if (fileSourceStore.sourceType === 'local') return `Uloží do souboru „${fileSourceStore.fileName}“ na tomto počítači`
+  if (fileSourceStore.sourceType === 'drive') return `Uloží na Google Disk („${fileSourceStore.fileName}“)`
+  return 'Stáhne nový JSON soubor'
+})
+
 function copySelected() {
   const shape = gardenStore.getShape(uiStore.selectedId)
   if (shape) uiStore.copyShape(shape)
@@ -40,18 +64,35 @@ function pasteClipboard() {
   uiStore.setTool('select')
 }
 
-async function handleImport() {
-  importError.value = ''
-  importSuccess.value = false
-  try {
-    await importJSON()
-    uiStore.deselect()
-    importSuccess.value = true
-    setTimeout(() => { importSuccess.value = false }, 2000)
-  } catch (e) {
-    importError.value = e.message
-    setTimeout(() => { importError.value = '' }, 4000)
-  }
+async function handleOpenLocal() {
+  closeMenu()
+  await fileSourceStore.openLocal()
+  if (!fileSourceStore.fileError) { uiStore.deselect(); flashSuccess('Načteno z počítače') }
+}
+
+async function handleOpenDrive() {
+  closeMenu()
+  await fileSourceStore.openDrivePicker()
+  if (!fileSourceStore.fileError && fileSourceStore.sourceType === 'drive') { uiStore.deselect(); flashSuccess('Načteno z Google Disku') }
+}
+
+async function handleSave() {
+  const result = await fileSourceStore.save()
+  if (result.target === 'local') flashSuccess(`Uloženo do „${result.name}“`)
+  else if (result.target === 'drive') flashSuccess(`Uloženo na Google Disk`)
+  else if (result.target === 'download') flashSuccess('Staženo')
+}
+
+function handleDownloadCopy() {
+  closeMenu()
+  fileSourceStore.downloadCopy()
+  flashSuccess('Staženo')
+}
+
+async function handleSaveAsNewDrive() {
+  closeMenu()
+  await fileSourceStore.saveAsNewDriveFile()
+  if (!fileSourceStore.fileError) flashSuccess('Uloženo na Google Disk jako nový soubor')
 }
 </script>
 
@@ -149,9 +190,18 @@ async function handleImport() {
 
     <div class="flex-1" />
 
+    <!-- Aktuálně otevřený soubor -->
+    <span
+      v-if="fileSourceStore.fileName"
+      class="text-garden-300 text-xs truncate max-w-[10rem]"
+      :title="fileSourceStore.fileName"
+    >
+      {{ fileSourceStore.sourceType === 'drive' ? '☁️' : '📄' }} {{ fileSourceStore.fileName }}
+    </span>
+
     <!-- Feedback messages -->
-    <span v-if="importSuccess" class="text-green-300 text-xs animate-pulse">✓ Načteno</span>
-    <span v-if="importError"   class="text-red-300   text-xs">⚠ {{ importError }}</span>
+    <span v-if="fileSuccess" class="text-green-300 text-xs animate-pulse">✓ {{ fileSuccess }}</span>
+    <span v-if="fileSourceStore.fileError" class="text-red-300 text-xs">⚠ {{ fileSourceStore.fileError }}</span>
 
     <!-- Stav automatického ukládání do prohlížeče -->
     <span class="flex items-center gap-1.5 text-garden-300 text-xs" :title="savedTooltip">
@@ -162,20 +212,67 @@ async function handleImport() {
       Automatické ukládání
     </span>
 
-    <!-- Save / Load -->
-    <button
-      class="px-2 py-1 rounded text-xs hover:bg-garden-600 transition-colors"
-      title="Načíst ze souboru JSON"
-      @click="handleImport"
-    >
-      📂 Načíst
-    </button>
+    <!-- Otevřít (dropdown: počítač / Google Disk) -->
+    <div class="relative" data-menu>
+      <button
+        class="flex items-center gap-1 px-2 py-1 rounded text-xs hover:bg-garden-600 transition-colors"
+        title="Otevřít soubor"
+        @click="toggleMenu('open')"
+      >
+        📂 Otevřít <span class="text-[10px]">▾</span>
+      </button>
+      <div
+        v-if="openMenu === 'open'"
+        class="absolute right-0 mt-1 w-52 bg-white text-gray-800 rounded shadow-lg border border-gray-200 py-1 z-30 text-xs"
+      >
+        <button class="w-full text-left px-3 py-1.5 hover:bg-garden-50" @click="handleOpenLocal">
+          💻 Z počítače
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="!driveConfigured"
+          :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
+          @click="handleOpenDrive"
+        >
+          ☁️ Z Google Disku
+        </button>
+      </div>
+    </div>
+
+    <!-- Uložit (chytré: zapíše do naposledy otevřeného zdroje, jinak stáhne) -->
     <button
       class="px-2 py-1 rounded text-xs bg-garden-500 hover:bg-garden-400 transition-colors font-medium"
-      title="Uložit jako JSON soubor"
-      @click="exportJSON"
+      :title="saveTooltip"
+      @click="handleSave"
     >
       💾 Uložit
     </button>
+
+    <!-- Další možnosti uložení -->
+    <div class="relative" data-menu>
+      <button
+        class="px-1.5 py-1 rounded text-xs hover:bg-garden-600 transition-colors"
+        title="Další možnosti uložení"
+        @click="toggleMenu('more')"
+      >
+        ⋯
+      </button>
+      <div
+        v-if="openMenu === 'more'"
+        class="absolute right-0 mt-1 w-60 bg-white text-gray-800 rounded shadow-lg border border-gray-200 py-1 z-30 text-xs"
+      >
+        <button class="w-full text-left px-3 py-1.5 hover:bg-garden-50" @click="handleDownloadCopy">
+          ⇩ Stáhnout kopii (JSON)
+        </button>
+        <button
+          class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          :disabled="!driveConfigured"
+          :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
+          @click="handleSaveAsNewDrive"
+        >
+          ☁️ Uložit na Disk jako nový soubor
+        </button>
+      </div>
+    </div>
   </header>
 </template>

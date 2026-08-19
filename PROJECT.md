@@ -35,18 +35,23 @@ src/
 │
 ├── stores/
 │   ├── gardenStore.js               # Hlavní state: shapes, undo/redo, autosave (žádný pevný "pozemek")
-│   └── uiStore.js                   # UI state: vybraný objekt, aktivní nástroj/barva/textura/typ (preset)
+│   ├── uiStore.js                   # UI state: vybraný objekt, aktivní nástroj/barva/textura/typ (preset)
+│   └── fileSourceStore.js           # Naposledy otevřený/uložený soubor (lokální disk / Google Disk), orchestruje open/save
 │
-├── composables/
-│   └── useStorage.js                # Export/import JSON souboru
+├── config/
+│   └── google.js                    # Client ID / API klíč pro Google Disk (z env proměnných, viz sekce "Google Disk — nastavení")
 │
 ├── utils/
 │   ├── shapes.js                    # ellipsePoints() — aproximace kruhu/elipsy mnohoúhelníkem
 │   ├── textures.js                  # getTexture(color, key) — procedurální dlaždice (Konva fillPatternImage), cachované
-│   └── grid.js                      # snapValue()/snapStagePos() — přichytávání k mřížce (kreslení i tažení)
+│   ├── grid.js                      # snapValue()/snapStagePos() — přichytávání k mřížce (kreslení i tažení)
+│   ├── idbHandle.js                 # IndexedDB uložení posledního FileSystemFileHandle napříč reloady stránky
+│   ├── localFileAccess.js           # File System Access API (otevřít/zapsat/oprávnění) + fallback na <input type=file>
+│   └── googleDrive.js               # Google Identity Services (OAuth) + Picker + Drive REST (open/update/create)
 │
 └── components/
-    ├── toolbar/AppToolbar.vue       # Horní lišta: mřížka/přichytávání/hustota, undo/redo, kopírovat/vložit, aktivní nástroj, autosave indikátor, save/load
+    ├── toolbar/AppToolbar.vue       # Horní lišta: mřížka/přichytávání/hustota, undo/redo, kopírovat/vložit, aktivní nástroj, autosave indikátor, Otevřít/Uložit
+    ├── ResumeSourceBanner.vue       # Banner "Pokračovat v naposledy otevřeném souboru?" nad canvasem
     ├── panels/
     │   ├── ToolPanel.vue            # Levý panel: nástroje (Výběr/Přesun/Obdélník/Kruh-Elipsa/Polygon/Text) + typy objektů podle kategorií, barva
     │   └── PropertyEditor.vue       # Pravý panel: editace vybraného tvaru (název/text, barva, textura, rozměry nebo velikost textu, poznámky, geometrie)
@@ -92,15 +97,50 @@ Od v1.1.0 jsou objekty freeform polygony (ne typované obdélníky s `width`/`he
 
 ## Ukládání dat
 
-| Mechanismus        | Kdy                                      |
-|--------------------|------------------------------------------|
-| localStorage       | Automaticky po každé změně (autosave)    |
-| JSON soubor (DL)   | Tlačítko "💾 Uložit" — stáhne soubor    |
-| JSON soubor (UP)   | Tlačítko "📂 Načíst" — nahraje soubor   |
+| Mechanismus              | Kdy                                                                 |
+|---------------------------|---------------------------------------------------------------------|
+| localStorage               | Automaticky po každé změně (autosave) — nezávisí na tom, odkud byl plán otevřen |
+| Lokální soubor (zápis zpět) | Tlačítko "💾 Uložit", pokud byl plán otevřen "💻 Z počítače" (Chrome/Edge) |
+| Google Disk (zápis zpět)   | Tlačítko "💾 Uložit", pokud byl plán otevřen "☁️ Z Google Disku"     |
+| JSON soubor (stažení)     | "📂 Otevřít" bez zapamatovaného zdroje / "⋯ → Stáhnout kopii"        |
+| Google Disk (nový soubor) | "⋯ → Uložit na Disk jako nový soubor"                                |
 
 Klíč v localStorage: `dave-garden-planner-v2` (od v1.1.0 — nový klíč kvůli změně datového modelu na polygony; staré `-v1` uložené plány se nenačtou automaticky)
 
-`gardenStore.lastSavedAt` drží čas posledního úspěšného zápisu do localStorage (nastavuje se v `_autoSave()`). `AppToolbar.vue` z toho ukazuje trvalý štítek "Automatické ukládání" s tečkou, která na ~700 ms zezelená při každém uložení — vědomě BEZ odpočtu vteřin v textu (dřívější verze "Uloženo před X s" byla vyhodnocena jako rušivá).
+`gardenStore.lastSavedAt` drží čas posledního úspěšného zápisu do localStorage (nastavuje se v `_autoSave()`). `AppToolbar.vue` z toho ukazuje trvalý štítek "Automatické ukládání" s tečkou, která na ~700 ms zezelená při každém uložení — vědomě BEZ odpočtu vteřin v textu (dřívější verze "Uloženo před X s" byla vyhodnocena jako rušivá). Toto je nezávislá bezpečnostní síť, funguje vždy, bez ohledu na to, jestli je plán navázaný na soubor.
+
+---
+
+## Otevírání souborů — lokální disk a Google Disk (v1.3.0)
+
+Kromě automatického ukládání do localStorage (výše) lze plán otevřít a ukládat zpět do skutečného souboru — na disku počítače, nebo na Google Disku. Řeší `stores/fileSourceStore.js`, který si drží, odkud je aktuální plán otevřený, a `AppToolbar.vue` mu dává dvě tlačítka:
+
+- **"📂 Otevřít ▾"** — dropdown: "💻 Z počítače" nebo "☁️ Z Google Disku".
+- **"💾 Uložit"** — "chytré": pokud je plán navázaný na lokální soubor nebo soubor na Disku, zapíše se **zpátky do něj** (žádné nové stahování do složky Stažené soubory); jinak (nový/nenavázaný plán) se chová jako dřív — stáhne nový JSON. Tlačítko "⋯" nabízí i explicitní "Stáhnout kopii" a "Uložit na Disk jako nový soubor".
+
+**Lokální disk — File System Access API** (`utils/localFileAccess.js`, jen Chrome/Edge; `supportsFileSystemAccess` detekuje podporu): `window.showOpenFilePicker()` vrátí `FileSystemFileHandle` — na rozdíl od klasického `<input type="file">` (pořád použitý jako fallback ve Firefoxu/Safari, tam ale bez handle) ho lze znovu použít later ke čtení i zápisu (`handle.createWritable()`), a hlavně je **structured-cloneable**, takže jde uložit do IndexedDB (`utils/idbHandle.js`) a přežije zavření záložky/reload stránky. Oprávnění se ověřuje přes `handle.queryPermission()`/`requestPermission()` (`verifyPermission()`) — `queryPermission` nikdy nevyžaduje gesto uživatele (lze volat i potichu při startu appky), `requestPermission` ho vyžaduje (jen jako reakce na klik).
+
+**Google Disk — OAuth + Picker** (`utils/googleDrive.js`): Google Identity Services (`accounts.google.com/gsi/client`) pro OAuth token (`google.accounts.oauth2.initTokenClient`, scope `drive.file` — appka vidí jen soubory, které sama vytvoří nebo které uživatel vybere přes Picker) a Google Picker (`apis.google.com/js/api.js`) pro výběr souboru z Disku. Obě knihovny se načítají dynamicky (žádná npm závislost) až při prvním použití. Čtení/zápis obsahu jde přímo přes Drive REST API (`files.get?alt=media`, `files.update` s `uploadType=media`, `files.create` s multipart uploadem) — bez `gapi.client`.
+
+**"Pamatuj si poslední soubor"** — `fileSourceStore` ukládá do localStorage (klíč `dave-garden-planner-last-source-v1`) jen **metadata** (typ, název, případně Drive `fileId`) — nikdy ne obsah. Skutečný `FileSystemFileHandle` je v IndexedDB (`utils/idbHandle.js`), Drive vyžaduje jen `fileId` (soubor se stáhne znovu čerstvý). Při startu appky (`fileSourceStore.initResume()`, voláno z `App.vue` vedle `gardenStore.init()`):
+- **lokální soubor s uděleným oprávněním** → načte se **úplně potichu**, žádný klik nutný (přesně "uživatel nemusí znovu otevírat soubor").
+- **lokální soubor bez (ještě) uděleného oprávnění, nebo soubor na Google Disku** → prohlížeč vyžaduje gesto uživatele (OAuth popup / `requestPermission`), takže se místo tichého načtení zobrazí `ResumeSourceBanner.vue` nad canvasem: "Pokračovat v „název“ (tento počítač / Google Disk)?" s tlačítky Pokračovat / Ne, nový plán. **To je limit prohlížečů, ne appky** — nejde bezpečnostně obejít.
+- Pokud handle/soubor mezitím zmizel nebo je poškozený, appka na to nespadne — jen zůstane u dat z localStorage autosave.
+
+### Google Disk — nastavení (jednorázově, dělá vlastník projektu)
+
+Google Disk integrace potřebuje vlastní OAuth Client ID + API klíč z Google Cloud Console — bez nich appka funguje normálně dál, jen tlačítka "Z Google Disku"/"Uložit na Disk jako nový soubor" jsou needitovatelná (`isGoogleConfigured()` v `config/google.js`).
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → vytvořit nový projekt (nebo použít existující).
+2. **APIs & Services → Library** → povolit **Google Drive API** a **Google Picker API**.
+3. **APIs & Services → OAuth consent screen** → typ "External", vyplnit název appky; v "Test users" přidat svůj Google účet (dokud appka není ověřená Googlem, funguje jen pro takto přidané testovací účty — pro osobní/rodinné použití to stačí).
+4. **APIs & Services → Credentials → Create Credentials**:
+   - **OAuth client ID** → typ "Web application" → do "Authorized JavaScript origins" přidat `https://daveprokop.github.io` a pro lokální vývoj `http://localhost:5173` → zkopírovat **Client ID**.
+   - **API key** → zkopírovat, pak omezit ("Restrict key" → "Websites" → přidat stejné domény), aby ho nešlo zneužít odjinud.
+5. Lokálně: zkopírovat `.env.example` do `.env.local` a vyplnit `VITE_GOOGLE_CLIENT_ID` / `VITE_GOOGLE_API_KEY`.
+6. Nasazení (GitHub Pages přes Actions): v GitHub repu **Settings → Secrets and variables → Actions** přidat repository secrets `VITE_GOOGLE_CLIENT_ID` a `VITE_GOOGLE_API_KEY` — `.github/workflows/deploy.yml` je při buildu předá jako env proměnné.
+
+Client ID ani API klíč nejsou tajné (jsou vidět ve zdrojovém kódu prohlížeče) — bezpečnost zajišťuje omezení na konkrétní domény v kroku 4, ne jejich utajení. Proto se necommitují jako hodnoty do repa, ale ani commit by sám o sobě nebyl bezpečnostní díra.
 
 ---
 
@@ -228,9 +268,9 @@ Rozměry lze kdykoliv doladit přesně v pravém panelu (pole Šířka/Výška v
 - Volný text na plánu (přesun, živé zvětšení/zmenšení)
 - Měřítko na canvas (1m = vyznačená vzdálenost) — hotovo už dřív
 - Autosave indikátor v toolbaru
+- Otevírání/ukládání z lokálního disku (File System Access API, s pamatováním posledního souboru) i z Google Disku (OAuth + Picker) — viz sekce "Otevírání souborů" výše. Google Disk vyžaduje jednorázové nastavení Client ID/API klíče vlastníkem projektu.
 
 ### Etapa 2 — zbývající plánované funkce
-- Google Drive integrace (načíst/uložit z Drive)
 - Skupinový výběr (lasso nebo Shift+click)
 - Průhlednost (opacity) objektu
 - Export jako PNG/SVG obrázek
@@ -261,3 +301,4 @@ Rozměry lze kdykoliv doladit přesně v pravém panelu (pole Šířka/Výška v
 | 2026-08-17 | 1.2.0 | Přichytávání k mřížce (zapnout/vypnout + volitelná hustota `GRID_SIZES`) — nový `utils/grid.js`. Přidány store soubory dostaly HMR podporu (`acceptHMRUpdate`) po zjištění, že úprava store souboru za běhu dev serveru nechá viset starou instanci bez nových polí (viz paměť projektu). |
 | 2026-08-17 | —     | Nový nástroj **Text** (`kind:'text'`) — volný popisek s vlastní `EllipseHandles`-podobnou logikou úchytu na zvětšení/zmenšení (`TextHandles.vue`, `fontSize`), přesouvatelný jako ostatní tvary. Jméno objektu se u ostatních tvarů přestalo zobrazovat na plátně (zůstává jen v panelu) — u textu ho nahradilo pole "Text", které JE zobrazovaný obsah. Autosave indikátor v toolbaru (`gardenStore.lastSavedAt`, tečka blikne při uložení). |
 | 2026-08-17 | —     | Kopírování/vkládání (Ctrl+C/V + tlačítka). Kruh/elipsa přestala jít deformovat tažením vrcholů — `EllipseHandles.vue` nahradil `VertexHandles.vue` čtyřmi úchyty na krajích poloos, tvar tak zůstává matematicky vždy elipsou (viz sekce výše). Oprava: výběr JAKÉHOKOLIV objektu (i klikem na existující) kradl focus do pole Název/Text (`watch(selectedId)` v `PropertyEditor.vue`), takže klávesové zkratky jako Ctrl+C/V přestaly fungovat — `uiStore.selectObject()` teď zaostřuje pole jen s explicitním `{ focusName: true }`, volaným jen při vytvoření NOVÉHO tvaru, ne při obyčejném výběru. |
+| 2026-08-19 | 1.3.0 | Otevírání souborů z lokálního disku (File System Access API + fallback) a z Google Disku (OAuth + Picker), s pamatováním naposledy otevřeného souboru mezi návštěvami (`fileSourceStore.js`, `ResumeSourceBanner.vue`). "Uložit" teď zapisuje zpět do navázaného souboru místo vždy stahovat novou kopii. `useStorage.js` composable smazán (nahrazen `fileSourceStore`). Google Disk vyžaduje jednorázové nastavení Client ID/API klíče vlastníkem projektu — viz "Google Disk — nastavení". |
