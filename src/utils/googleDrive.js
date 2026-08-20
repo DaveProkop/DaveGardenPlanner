@@ -66,12 +66,22 @@ function requestToken(interactive) {
 // interactive:false = zkusit získat token bez viditelného UI (funguje jen
 // pokud už uživatel v této session souhlas jednou udělil); jinak zobrazí
 // Google přihlašovací/souhlasové okno — MUSÍ být voláno jako reakce na klik.
+//
+// Token je jen v paměti modulu, takže po refreshi stránky je pryč a i pro
+// "interactive" volání bychom jinak pokaždé zobrazili celý souhlasový
+// dialog. Než na to sáhneme, nejdřív potichu zkusíme prompt:'' (funguje bez
+// gesta uživatele, protože nic nezobrazuje) — pokud už appce v tomto
+// prohlížeči/účtu souhlas jednou udělil, projde to bez jediného kliknutí;
+// když ne, potichu to selže a spadneme na plný interaktivní dialog jako dřív.
 export async function getAccessToken({ interactive = true } = {}) {
   if (!isGoogleConfigured()) {
     throw new Error('Google Disk není nakonfigurovaný (chybí Client ID / API klíč) — viz PROJECT.md.')
   }
   await ensureGsi()
   if (accessToken && Date.now() < tokenExpiresAt - 30_000) return accessToken
+  if (interactive) {
+    try { return await requestToken(false) } catch { /* tichý pokus selhal, zkusíme interaktivně níž */ }
+  }
   return requestToken(interactive)
 }
 

@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useGardenStore } from '@/stores/gardenStore'
 import { useUiStore, GRID_SIZES } from '@/stores/uiStore'
 import { useFileSourceStore } from '@/stores/fileSourceStore'
@@ -15,7 +15,25 @@ const openMenu   = ref(null) // null | 'open' | 'more'
 const fileSuccess = ref('')
 let successTimer = null
 
-function toggleMenu(name) { openMenu.value = openMenu.value === name ? null : name }
+// Rozbalovací nabídky se teleportují do <body> (viz šablona) — horní lišta má
+// na mobilu overflow-x-auto kvůli horizontálnímu scrollu, což si CSS spec
+// nevyhnutelně přeloží i jako overflow-y:auto (počítaná hodnota, i když jsme
+// nastavili jen -x) a dolů vysouvající se nabídka by se tak vždy neviditelně
+// ořízla. Pozice se dopočítává z reálné pozice tlačítka při každém otevření.
+const openBtnRef = ref(null)
+const moreBtnRef = ref(null)
+const menuPos    = ref({ top: 0, right: 0 })
+
+function toggleMenu(name) {
+  if (openMenu.value === name) { openMenu.value = null; return }
+  openMenu.value = name
+  nextTick(() => {
+    const btn = name === 'open' ? openBtnRef.value : moreBtnRef.value
+    if (!btn) return
+    const r = btn.getBoundingClientRect()
+    menuPos.value = { top: r.bottom + 4, right: Math.max(4, window.innerWidth - r.right) }
+  })
+}
 function closeMenu() { openMenu.value = null }
 
 function onWindowClick(e) {
@@ -216,28 +234,33 @@ async function handleSaveAsNewDrive() {
     <!-- Otevřít (dropdown: počítač / Google Disk) -->
     <div class="relative" data-menu>
       <button
+        ref="openBtnRef"
         class="flex items-center gap-1 px-2 py-1 rounded text-xs hover:bg-garden-600 transition-colors"
         title="Otevřít soubor"
         @click="toggleMenu('open')"
       >
         📂 Otevřít <span class="text-[10px]">▾</span>
       </button>
-      <div
-        v-if="openMenu === 'open'"
-        class="absolute right-0 mt-1 w-52 bg-white text-gray-800 rounded shadow-lg border border-gray-200 py-1 z-30 text-xs"
-      >
-        <button class="w-full text-left px-3 py-1.5 hover:bg-garden-50" @click="handleOpenLocal">
-          💻 Z počítače
-        </button>
-        <button
-          class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="!driveConfigured"
-          :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
-          @click="handleOpenDrive"
+      <Teleport to="body">
+        <div
+          v-if="openMenu === 'open'"
+          data-menu
+          class="fixed w-52 bg-white text-gray-800 rounded shadow-lg border border-gray-200 py-1 z-50 text-xs"
+          :style="{ top: menuPos.top + 'px', right: menuPos.right + 'px' }"
         >
-          ☁️ Z Google Disku
-        </button>
-      </div>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-garden-50" @click="handleOpenLocal">
+            💻 Z počítače
+          </button>
+          <button
+            class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="!driveConfigured"
+            :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
+            @click="handleOpenDrive"
+          >
+            ☁️ Z Google Disku
+          </button>
+        </div>
+      </Teleport>
     </div>
 
     <!-- Uložit (chytré: zapíše do naposledy otevřeného zdroje, jinak stáhne) -->
@@ -252,28 +275,33 @@ async function handleSaveAsNewDrive() {
     <!-- Další možnosti uložení -->
     <div class="relative" data-menu>
       <button
+        ref="moreBtnRef"
         class="px-1.5 py-1 rounded text-xs hover:bg-garden-600 transition-colors"
         title="Další možnosti uložení"
         @click="toggleMenu('more')"
       >
         ⋯
       </button>
-      <div
-        v-if="openMenu === 'more'"
-        class="absolute right-0 mt-1 w-60 bg-white text-gray-800 rounded shadow-lg border border-gray-200 py-1 z-30 text-xs"
-      >
-        <button class="w-full text-left px-3 py-1.5 hover:bg-garden-50" @click="handleDownloadCopy">
-          ⇩ Stáhnout kopii (JSON)
-        </button>
-        <button
-          class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="!driveConfigured"
-          :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
-          @click="handleSaveAsNewDrive"
+      <Teleport to="body">
+        <div
+          v-if="openMenu === 'more'"
+          data-menu
+          class="fixed w-60 bg-white text-gray-800 rounded shadow-lg border border-gray-200 py-1 z-50 text-xs"
+          :style="{ top: menuPos.top + 'px', right: menuPos.right + 'px' }"
         >
-          ☁️ Uložit na Disk jako nový soubor
-        </button>
-      </div>
+          <button class="w-full text-left px-3 py-1.5 hover:bg-garden-50" @click="handleDownloadCopy">
+            ⇩ Stáhnout kopii (JSON)
+          </button>
+          <button
+            class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="!driveConfigured"
+            :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
+            @click="handleSaveAsNewDrive"
+          >
+            ☁️ Uložit na Disk jako nový soubor
+          </button>
+        </div>
+      </Teleport>
     </div>
    </div>
   </header>
