@@ -107,10 +107,32 @@ function handleDownloadCopy() {
   flashSuccess('Staženo')
 }
 
-async function handleSaveAsNewDrive() {
+// "Uložit jako nový soubor" na Disku se ptá na název (uživatel si ho dřív
+// nemohl zvolit — appka ho vždy vygenerovala sama) — místo window.prompt()
+// vlastní malý dialog stylově sedící ke zbytku appky (viz šablona dole).
+const showSaveAsDialog = ref(false)
+const saveAsName       = ref('')
+
+function handleSaveAsNewDrive() {
   closeMenu()
-  await fileSourceStore.saveAsNewDriveFile()
+  saveAsName.value = fileSourceStore.fileName || `zahrada-${new Date().toISOString().slice(0, 10)}.json`
+  showSaveAsDialog.value = true
+}
+
+async function confirmSaveAsDrive() {
+  if (!saveAsName.value.trim()) return
+  showSaveAsDialog.value = false
+  await fileSourceStore.saveAsNewDriveFile(saveAsName.value)
   if (!fileSourceStore.fileError) flashSuccess('Uloženo na Google Disk jako nový soubor')
+}
+
+// "Přepsat soubor na Disku" — na rozdíl od výše vybere přes Picker existující
+// soubor a přepíše ho (na rozdíl od "chytrého" Uložit funguje i když plán
+// zatím na žádný soubor na Disku navázaný není).
+async function handleOverwriteDrive() {
+  closeMenu()
+  const ok = await fileSourceStore.overwriteDriveFile()
+  if (ok) flashSuccess('Přepsáno na Google Disku')
 }
 </script>
 
@@ -222,17 +244,20 @@ async function handleSaveAsNewDrive() {
     <span v-if="fileSuccess" class="text-green-300 text-xs animate-pulse">✓ {{ fileSuccess }}</span>
     <span v-if="fileSourceStore.fileError" class="text-red-300 text-xs">⚠ {{ fileSourceStore.fileError }}</span>
 
-    <!-- Stav automatického ukládání do prohlížeče — text říká výslovně "do
-         prohlížeče", ne jen "Automatické ukládání", ať to nepůsobí, že se
-         ukládá i do propojeného souboru (na Disku/počítači) — to dělá jen
-         tlačítko "Uložit". Tooltip s časem je jen doplněk (na mobilu bez
-         hoveru beztak nejde vidět, proto to musí být i v samotném textu). -->
-    <span class="flex items-center gap-1.5 text-garden-300 text-xs" :title="savedTooltip">
+    <!-- Stav automatického ukládání do prohlížeče — NENÍ to tlačítko/přepínač
+         (proto bez rámečku/paddingu/hoveru, na rozdíl od skutečných ovládacích
+         prvků vedle něj), pořád běží na pozadí a nejde to vypnout — jen
+         hláška, že appka průběžně ukládá pojistnou kopii do localStorage
+         prohlížeče, nezávisle na tom, jestli je otevřený soubor. Do souboru
+         na Disku/počítači zapisuje výhradně tlačítko "Uložit". Tooltip s
+         časem je jen doplněk (na mobilu bez hoveru beztak nejde vidět, proto
+         to musí být i v samotném textu). -->
+    <span class="flex items-center gap-1 text-garden-400 text-[11px] italic" :title="savedTooltip">
       <span
-        class="w-1.5 h-1.5 rounded-full transition-colors duration-300"
-        :class="justSaved ? 'bg-green-400' : 'bg-garden-400'"
+        class="w-1.5 h-1.5 rounded-full transition-colors duration-300 flex-shrink-0"
+        :class="justSaved ? 'bg-green-400' : 'bg-garden-500'"
       />
-      Ukládání do prohlížeče
+      Ukládá se do prohlížeče (pojistka, ne soubor)
     </span>
 
     <!-- Otevřít (dropdown: počítač / Google Disk) -->
@@ -302,11 +327,56 @@ async function handleSaveAsNewDrive() {
             :title="driveConfigured ? '' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
             @click="handleSaveAsNewDrive"
           >
-            ☁️ Uložit na Disk jako nový soubor
+            ☁️ Uložit na Disk jako nový soubor…
+          </button>
+          <button
+            class="w-full text-left px-3 py-1.5 hover:bg-garden-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            :disabled="!driveConfigured"
+            :title="driveConfigured ? 'Vybereš existující soubor na Disku a přepíšeš ho aktuálním plánem' : 'Google Disk není v této appce nakonfigurovaný — viz PROJECT.md'"
+            @click="handleOverwriteDrive"
+          >
+            ☁️ Přepsat soubor na Disku…
           </button>
         </div>
       </Teleport>
     </div>
    </div>
   </header>
+
+  <!-- Dialog na zadání názvu při "Uložit jako nový soubor" na Disk — dřív se
+       název generoval potichu sám, uživatel si ho nemohl zvolit. -->
+  <Teleport to="body">
+    <div
+      v-if="showSaveAsDialog"
+      class="fixed inset-0 bg-black/40 z-50 flex items-center justify-center px-4"
+      @click.self="showSaveAsDialog = false"
+    >
+      <div class="bg-white rounded-lg shadow-xl p-4 w-full max-w-sm text-sm">
+        <div class="font-semibold text-garden-800 mb-2">Uložit na Google Disk jako nový soubor</div>
+        <label class="block">
+          <span class="text-garden-600 text-xs block mb-1">Název souboru</span>
+          <input
+            v-model="saveAsName"
+            type="text"
+            autofocus
+            class="w-full border border-garden-200 rounded px-2 py-1.5 text-sm focus:outline-none focus:border-garden-500"
+            @keydown.enter="confirmSaveAsDrive"
+            @keydown.esc="showSaveAsDialog = false"
+          />
+        </label>
+        <div class="flex justify-end gap-2 mt-3">
+          <button class="px-3 py-1.5 rounded text-xs text-garden-600 hover:bg-garden-50" @click="showSaveAsDialog = false">
+            Zrušit
+          </button>
+          <button
+            :disabled="!saveAsName.trim()"
+            class="px-3 py-1.5 rounded text-xs bg-garden-600 hover:bg-garden-700 text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            @click="confirmSaveAsDrive"
+          >
+            Uložit
+          </button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>

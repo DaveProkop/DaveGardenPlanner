@@ -10,6 +10,15 @@ import * as googleDrive from '@/utils/googleDrive'
 // prohlížeč/oprávnění dovolí) znovu prokliknout k výběru souboru.
 const META_KEY = 'dave-garden-planner-last-source-v1'
 
+// Jakmile uživatel v rámci JEDNOHO otevření prohlížeče (tab) jednou potvrdí
+// napojení na konkrétní soubor na Disku, appka si to poznamená do
+// sessionStorage — při dalším refresh/návratu ve STEJNÉ session se banner
+// znovu neptá a zkusí potichu načíst rovnou (viz initResume níže). Zavřením
+// karty/prohlížeče sessionStorage zmizí, takže v nové session appka zase
+// (bezpečně) požádá o potvrzení, ať nikdy potichu nepřepíše rozkreslenou
+// práci obsahem z Disku bez vědomí uživatele.
+const SESSION_KEY = 'dave-garden-planner-resume-session-v1'
+
 export const useFileSourceStore = defineStore('fileSource', () => {
   const gardenStore = useGardenStore()
 
@@ -43,6 +52,8 @@ export const useFileSourceStore = defineStore('fileSource', () => {
     pendingResume.value = null
     fileError.value = ''
     _saveMeta()
+    if (type === 'drive') sessionStorage.setItem(SESSION_KEY, JSON.stringify({ fileId: driveFileId.value }))
+    else sessionStorage.removeItem(SESSION_KEY)
   }
 
   function forgetSource() {
@@ -52,6 +63,7 @@ export const useFileSourceStore = defineStore('fileSource', () => {
     localHandle.value = null
     pendingResume.value = null
     localStorage.removeItem(META_KEY)
+    sessionStorage.removeItem(SESSION_KEY)
     clearLocalHandle().catch(() => {})
   }
 
@@ -78,6 +90,24 @@ export const useFileSourceStore = defineStore('fileSource', () => {
       }
       pendingResume.value = { type: 'local', name: meta.name, handle }
     } else if (meta.type === 'drive') {
+      // Byl tenhle soubor už jednou potvrzený v TÉTO session (viz SESSION_KEY
+      // výše)? Pak zkusit tiché načtení bez banneru — funguje jen pokud Google
+      // ještě potichu vydá token (prompt:'' v googleDrive.js), jinak potichu
+      // selže a spadneme na banner jako u úplně nové session.
+      let sessionConfirmed = false
+      try {
+        const s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || 'null')
+        sessionConfirmed = s?.fileId === meta.fileId
+      } catch { /* poškozená sessionStorage položka, ignorovat */ }
+
+      if (sessionConfirmed) {
+        try {
+          const text = await googleDrive.downloadFile(meta.fileId, { interactive: false })
+          gardenStore.loadFromData(JSON.parse(text))
+          _setSource('drive', meta.name, { fileId: meta.fileId })
+          return
+        } catch { /* tichý pokus nevyšel, ukázat banner jako obvykle */ }
+      }
       pendingResume.value = { type: 'drive', name: meta.name, fileId: meta.fileId }
     }
   }
@@ -178,13 +208,16 @@ export const useFileSourceStore = defineStore('fileSource', () => {
     downloadJSON(text, name)
   }
 
-  async function saveAsNewDriveFile() {
+  // name = název zadaný uživatelem (dialog v AppToolbar.vue) — vždy vytvoří
+  // NOVÝ soubor na Disku a naváže se na něj.
+  async function saveAsNewDriveFile(name) {
     busy.value = true
     fileError.value = ''
     try {
       const text = JSON.stringify(gardenStore.toData(), null, 2)
-      const name = fileName.value || `zahrada-${new Date().toISOString().slice(0, 10)}.json`
-      const created = await googleDrive.createFile(name, text)
+      const trimmed = (name || fileName.value || `zahrada-${new Date().toISOString().slice(0, 10)}.json`).trim()
+      const finalName = trimmed.toLowerCase().endsWith('.json') ? trimmed : `${trimmed}.json`
+      const created = await googleDrive.createFile(finalName, text)
       _setSource('drive', created.name, { fileId: created.id })
       await clearLocalHandle().catch(() => {})
       lastSavedToSourceAt.value = new Date()
@@ -195,10 +228,34 @@ export const useFileSourceStore = defineStore('fileSource', () => {
     }
   }
 
+  // Uživatel vybere EXISTUJÍCÍ soubor na Disku (přes Picker) a appka ho
+  // přepíše aktuálním obsahem plánu — navazuje se na něj i pro příští
+  // "chytré" Uložit. Vrací true při úspěchu, false při zrušení výběru
+  // (chyba jde přes fileError jako u ostatních akcí).
+  async function overwriteDriveFile() {
+    busy.value = true
+    fileError.value = ''
+    try {
+      const picked = await googleDrive.pickFile()
+      if (!picked) return false
+      const text = JSON.stringify(gardenStore.toData(), null, 2)
+      await googleDrive.updateFile(picked.fileId, text)
+      _setSource('drive', picked.name, { fileId: picked.fileId })
+      await clearLocalHandle().catch(() => {})
+      lastSavedToSourceAt.value = new Date()
+      return true
+    } catch (e) {
+      fileError.value = e.message || 'Přepsání souboru na Google Disku selhalo.'
+      return false
+    } finally {
+      busy.value = false
+    }
+  }
+
   return {
     sourceType, fileName, driveFileId, lastSavedToSourceAt, fileError, busy, pendingResume,
     initResume, resume, dismissResume,
-    openLocal, openDrivePicker, save, downloadCopy, saveAsNewDriveFile, forgetSource,
+    openLocal, openDrivePicker, save, downloadCopy, saveAsNewDriveFile, overwriteDriveFile, forgetSource,
   }
 })
 
