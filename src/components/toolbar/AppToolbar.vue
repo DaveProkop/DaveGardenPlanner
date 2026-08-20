@@ -222,13 +222,17 @@ async function handleSaveAsNewDrive() {
     <span v-if="fileSuccess" class="text-green-300 text-xs animate-pulse">✓ {{ fileSuccess }}</span>
     <span v-if="fileSourceStore.fileError" class="text-red-300 text-xs">⚠ {{ fileSourceStore.fileError }}</span>
 
-    <!-- Stav automatického ukládání do prohlížeče -->
+    <!-- Stav automatického ukládání do prohlížeče — text říká výslovně "do
+         prohlížeče", ne jen "Automatické ukládání", ať to nepůsobí, že se
+         ukládá i do propojeného souboru (na Disku/počítači) — to dělá jen
+         tlačítko "Uložit". Tooltip s časem je jen doplněk (na mobilu bez
+         hoveru beztak nejde vidět, proto to musí být i v samotném textu). -->
     <span class="flex items-center gap-1.5 text-garden-300 text-xs" :title="savedTooltip">
       <span
         class="w-1.5 h-1.5 rounded-full transition-colors duration-300"
         :class="justSaved ? 'bg-green-400' : 'bg-garden-400'"
       />
-      Automatické ukládání
+      Ukládání do prohlížeče
     </span>
 
     <!-- Otevřít (dropdown: počítač / Google Disk) -->
