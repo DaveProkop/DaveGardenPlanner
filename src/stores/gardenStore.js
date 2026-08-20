@@ -6,7 +6,8 @@ const AUTOSAVE_KEY = 'dave-garden-planner-v2'
 const MAX_HISTORY  = 50
 
 export const useGardenStore = defineStore('garden', () => {
-  const shapes = ref([])  // [{ id, name, color, texture, notes, points: [x1,y1,x2,y2,...] }] — metry
+  const shapes = ref([])  // [{ id, name, color, texture, notes, typeId, age, points: [x1,y1,x2,y2,...] }] — metry
+  const plot   = ref(null) // { points: [x1,y1,...] } | null — hranice pozemku, mimo shapes (viz gardenStore.setPlot)
 
   const history    = ref([])
   const historyIdx = ref(-1)
@@ -16,7 +17,10 @@ export const useGardenStore = defineStore('garden', () => {
   const canRedo = computed(() => historyIdx.value < history.value.length - 1)
 
   function _snapshot() {
-    const state = { shapes: JSON.parse(JSON.stringify(shapes.value)) }
+    const state = {
+      shapes: JSON.parse(JSON.stringify(shapes.value)),
+      plot:   plot.value ? JSON.parse(JSON.stringify(plot.value)) : null,
+    }
     history.value = history.value.slice(0, historyIdx.value + 1)
     history.value.push(state)
     if (history.value.length > MAX_HISTORY) history.value.shift()
@@ -26,6 +30,7 @@ export const useGardenStore = defineStore('garden', () => {
 
   function _apply(state) {
     shapes.value = JSON.parse(JSON.stringify(state.shapes))
+    plot.value   = state.plot ? JSON.parse(JSON.stringify(state.plot)) : null
     _autoSave()
   }
 
@@ -36,9 +41,12 @@ export const useGardenStore = defineStore('garden', () => {
   // points = flat array [x1,y1,x2,y2,...] v metrech
   // kind: null (obecný polygon) | 'ellipse' (nakresleno nástrojem Kruh/Elipsa —
   // nejde do něj přidávat další vrcholy, jen měnit rozměry / posouvat stávající body)
-  function addShape(points, name, color, texture = null, kind = null) {
+  // typeId = klíč z OBJECT_TYPES, ze kterého byl tvar nakreslen (viz uiStore.activePresetId),
+  // nebo null pro volně nakreslený tvar bez zvoleného typu. Určuje např. dostupnost pole
+  // Stáří a zobrazení vzdálenosti od hranice pozemku (jen tree/shrub/bed).
+  function addShape(points, name, color, texture = null, kind = null, typeId = null) {
     const id = uuidv4()
-    shapes.value.push({ id, name, color, texture, kind, notes: '', points: [...points] })
+    shapes.value.push({ id, name, color, texture, kind, typeId, age: null, notes: '', points: [...points] })
     _snapshot()
     return id
   }
@@ -118,12 +126,27 @@ export const useGardenStore = defineStore('garden', () => {
 
   function getShape(id) { return shapes.value.find(s => s.id === id) }
 
+  // --- Pozemek (hranice) ---
+  // Samostatný stav mimo shapes — ať se ho nemůže dotknout Ctrl+C/V ani Delete
+  // (obě pracují jen přes uiStore.selectedId → shapes[]), a ať je počet objektů
+  // v gardenStore.shapes.length i nový seznam objektů čistý bez filtrování.
+  function setPlot(points) {
+    plot.value = { points: [...points] }
+    _snapshot()
+  }
+
+  function clearPlot() {
+    plot.value = null
+    _snapshot()
+  }
+
   // --- Persistence ---
   function toData() {
     return {
       version:  __APP_VERSION__,
       savedAt:  new Date().toISOString(),
       shapes:   JSON.parse(JSON.stringify(shapes.value)),
+      plot:     plot.value ? JSON.parse(JSON.stringify(plot.value)) : null,
     }
   }
 
@@ -131,6 +154,8 @@ export const useGardenStore = defineStore('garden', () => {
     if (data.shapes) shapes.value = data.shapes
     // Zpětná kompatibilita se starým formátem (v1 měl `objects`)
     else if (data.objects) shapes.value = []
+    // Starší uložené plány nemají klíč `plot` vůbec — ?? ho bezpečně převede na null.
+    plot.value = data.plot ?? null
     _snapshot()
   }
 
@@ -146,7 +171,7 @@ export const useGardenStore = defineStore('garden', () => {
     if (raw) {
       try {
         loadFromData(JSON.parse(raw))
-        history.value   = [{ shapes: JSON.parse(JSON.stringify(shapes.value)) }]
+        history.value   = [{ shapes: JSON.parse(JSON.stringify(shapes.value)), plot: plot.value ? JSON.parse(JSON.stringify(plot.value)) : null }]
         historyIdx.value = 0
         return
       } catch { /* poškozená data, začneme znovu */ }
@@ -155,9 +180,10 @@ export const useGardenStore = defineStore('garden', () => {
   }
 
   return {
-    shapes, lastSavedAt,
+    shapes, plot, lastSavedAt,
     canUndo, canRedo, undo, redo,
     addShape, addText, pasteShape, updateShape, moveShape, updateVertex, insertVertex, removeVertex, removeShape, getShape,
+    setPlot, clearPlot,
     toData, loadFromData, init,
   }
 })

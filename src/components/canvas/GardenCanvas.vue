@@ -2,12 +2,16 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useGardenStore } from '@/stores/gardenStore'
 import { useUiStore }     from '@/stores/uiStore'
-import { ellipsePoints }  from '@/utils/shapes'
+import { ellipsePoints, bboxOf } from '@/utils/shapes'
 import { snapValue }      from '@/utils/grid'
+import { pickNiceStep, pickFittingStep } from '@/utils/scale'
+import { usePlotDistance } from '@/composables/usePlotDistance'
+import { PLOT_DISTANCE_TYPES } from '@/constants/objectTypes'
 import GardenObject    from './GardenObject.vue'
 import VertexHandles   from './VertexHandles.vue'
 import TextHandles     from './TextHandles.vue'
 import EllipseHandles  from './EllipseHandles.vue'
+import RulerBar         from './RulerBar.vue'
 
 const PPM = 50
 const DEFAULT_TEXT_FONT_SIZE = 1 // metry
@@ -73,21 +77,53 @@ const gridLines = computed(() => {
   return lines
 })
 
-// Popisky vzdálenosti podél os x=0 / y=0 (po 5 m), jen pro viditelnou oblast
-const rulerLabels = computed(() => {
-  const { x0, y0, x1, y1 } = viewBounds.value
-  const xStart = Math.floor(x0/5)*5, xEnd = Math.ceil(x1/5)*5
-  const yStart = Math.floor(y0/5)*5, yEnd = Math.ceil(y1/5)*5
-  const labels = []
-  for (let x = xStart; x <= xEnd; x += 5) {
-    if (x === 0) continue
-    labels.push({ x: x*PPM+3, y: Math.max(y0,0)*PPM+3, text:`${x}m`, fontSize:10, fill:'#4A7C3F' })
+// --- Hranice pozemku (vykreslení) ---
+const plotLineConfig = computed(() => {
+  if (!gardenStore.plot) return null
+  return {
+    points:      gardenStore.plot.points.map(v => v * PPM),
+    stroke:      '#2B4A22',
+    strokeWidth: 3,
+    dash:        [10, 6],
+    closed:      true,
+    listening:   false,
   }
-  for (let y = yStart; y <= yEnd; y += 5) {
-    if (y === 0) continue
-    labels.push({ x: Math.max(x0,0)*PPM+3, y: y*PPM+3, text:`${y}m`, fontSize:10, fill:'#4A7C3F' })
+})
+
+const plotLabelConfig = computed(() => {
+  if (!gardenStore.plot) return null
+  const b = bboxOf(gardenStore.plot.points)
+  return {
+    x: b.minX * PPM + 4,
+    y: b.minY * PPM - 18,
+    text: 'Hranice pozemku',
+    fontSize: 12,
+    fontStyle: 'bold',
+    fill: '#2B4A22',
+    listening: false,
   }
-  return labels
+})
+
+// --- Pravítka nahoře/vlevo (pinnutá k okraji viewportu, mimo Konva stage) ---
+// Krok se vybírá stejnou "hezkou" řadou hodnot jako spodní měřítko (scaleBar),
+// jen s opačnou podmínkou — nejjemnější dělení, které je ještě čitelné (>=50px).
+function _rulerTicks(v0, v1, pxPerMeter, offset) {
+  const step = pickNiceStep(pxPerMeter, 50)
+  const start = Math.floor(v0/step)*step, end = Math.ceil(v1/step)*step
+  const eps = step/1000
+  const ticks = []
+  for (let v = start; v <= end + eps; v += step) {
+    ticks.push({ pos: v*pxPerMeter + offset, label: `${Math.round(v*100)/100}m` })
+  }
+  return ticks
+}
+const rulerTicksX = computed(() => {
+  const { x0, x1 } = viewBounds.value
+  return _rulerTicks(x0, x1, PPM * zoomScale.value, stagePos.value.x)
+})
+const rulerTicksY = computed(() => {
+  const { y0, y1 } = viewBounds.value
+  return _rulerTicks(y0, y1, PPM * zoomScale.value, stagePos.value.y)
 })
 
 // --- Drawing state ---
@@ -171,7 +207,9 @@ function onMouseup(e) {
     const points = tool === 'rect'
       ? [x0,y0, x1,y0, x1,y1, x0,y1]
       : ellipsePoints((x0+x1)/2, (y0+y1)/2, (x1-x0)/2, (y1-y0)/2)
-    const id = gardenStore.addShape(points, _nextName(), uiStore.activeColor, uiStore.activeTexture, tool === 'circle' ? 'ellipse' : null)
+    // Pozn.: hranice pozemku se dnes kreslí jen nástrojem Polygon (viz uiStore.startPlotDrawing),
+    // takže drawTarget==='plot' tady nikdy nenastane — rect/circle větev je vždy běžný addShape.
+    const id = gardenStore.addShape(points, _nextName(), uiStore.activeColor, uiStore.activeTexture, tool === 'circle' ? 'ellipse' : null, uiStore.activePresetId)
     uiStore.selectObject(id, { focusName: true })
     // Po nakreslení se vrátit na Výběr — pokud ale kreslíme podle vybraného
     // typu objektu (např. víc stromů za sebou), zůstat u stejného nástroje.
@@ -196,9 +234,14 @@ function onStageClick(e) {
 }
 
 function _commitPolygon() {
-  const id = gardenStore.addShape([...drawPoints.value], _nextName(), uiStore.activeColor, uiStore.activeTexture)
-  uiStore.selectObject(id, { focusName: true })
-  if (!uiStore.activePresetId) uiStore.setTool('select')
+  if (uiStore.drawTarget === 'plot') {
+    gardenStore.setPlot([...drawPoints.value])
+    uiStore.setTool('select')
+  } else {
+    const id = gardenStore.addShape([...drawPoints.value], _nextName(), uiStore.activeColor, uiStore.activeTexture, null, uiStore.activePresetId)
+    uiStore.selectObject(id, { focusName: true })
+    if (!uiStore.activePresetId) uiStore.setTool('select')
+  }
   drawPoints.value = []
   isDrawing.value  = false
 }
@@ -326,22 +369,142 @@ function zoomBy(factor) {
 function zoomIn()  { zoomBy(1.25) }
 function zoomOut() { zoomBy(1/1.25) }
 
+// --- Pinch-to-zoom / dvouprstý pan (mobil) ---
+// Pointer eventy (výše) dávají vždy jen jeden pointer, pro víceprsté gesto
+// potřebujeme raw touch eventy s přístupem k e.evt.touches (standardní Konva
+// multi-touch recept). Souřadnice doteků jsou vůči viewportu (clientX/Y), ale
+// stage.x()/y() jsou vůči kontejneru plátna — musí se přepočítat přes
+// getBoundingClientRect(), jinak by pinch mimo canvas v (0,0) viewportu driftoval.
+let pinchLastDist   = 0
+let pinchLastCenter = null
+
+function _touchStagePos(touch, stage) {
+  const rect = stage.container().getBoundingClientRect()
+  return { x: touch.clientX - rect.left, y: touch.clientY - rect.top }
+}
+function _touchDistance(p1, p2) { return Math.hypot(p2.x - p1.x, p2.y - p1.y) }
+function _touchCenter(p1, p2)   { return { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 } }
+
+function onTouchStart(e) {
+  if (e.evt.touches.length < 2) return
+  const stage = stageRef.value.getStage()
+  if (stage.isDragging()) stage.stopDrag()
+  // Rozkreslený obdélník/kruh druhým prstem zrušit — polygon nechat být
+  // (jeho vrcholy se přidávají jednotlivě přes pointerdown, ne tažením).
+  if (isDrawing.value && (uiStore.activeTool === 'rect' || uiStore.activeTool === 'circle')) {
+    isDrawing.value = false
+    dragStart.value = null
+  }
+}
+
+function onTouchMove(e) {
+  const touches = e.evt.touches
+  if (touches.length !== 2) return
+  e.evt.preventDefault()
+  const stage = stageRef.value.getStage()
+  const p1 = _touchStagePos(touches[0], stage)
+  const p2 = _touchStagePos(touches[1], stage)
+  const center = _touchCenter(p1, p2)
+  const dist   = _touchDistance(p1, p2)
+
+  if (!pinchLastCenter) { pinchLastCenter = center; pinchLastDist = dist; return }
+
+  const oldScale = stage.scaleX()
+  const pointTo  = { x: (center.x - stage.x()) / oldScale, y: (center.y - stage.y()) / oldScale }
+  const newScale = Math.min(Math.max(oldScale * (dist / pinchLastDist), 0.08), 10)
+
+  const dx = center.x - pinchLastCenter.x
+  const dy = center.y - pinchLastCenter.y
+  const newPos = {
+    x: center.x - pointTo.x * newScale + dx,
+    y: center.y - pointTo.y * newScale + dy,
+  }
+
+  stage.scale({ x: newScale, y: newScale })
+  stage.position(newPos)
+  stage.batchDraw()
+  zoomScale.value = newScale
+  stagePos.value  = newPos
+
+  pinchLastDist   = dist
+  pinchLastCenter = center
+}
+
+function onTouchEnd(e) {
+  if (e.evt.touches.length < 2) { pinchLastDist = 0; pinchLastCenter = null }
+}
+
 // Měřítko dole — vybere "hezkou" hodnotu v metrech, jejíž pruh se vejde do max. šířky
-const SCALE_STEPS = [0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500]
+// (stejná řada kroků SCALE_STEPS jako pravítko nahoře/vlevo, ať oboje ladí)
 const SCALE_MAX_PX = 120
 const scaleBar = computed(() => {
   const pxPerMeter = PPM * zoomScale.value
-  let meters = SCALE_STEPS[0]
-  for (const step of SCALE_STEPS) {
-    if (step * pxPerMeter <= SCALE_MAX_PX) meters = step
-    else break
-  }
+  const meters = pickFittingStep(pxPerMeter, SCALE_MAX_PX)
   return { meters, px: meters * pxPerMeter }
 })
 
+// --- Vzdálenost vybraného tvaru od hranice pozemku ---
+// Jen pro strom/keř/záhon (PLOT_DISTANCE_TYPES) — u ostatních typů (i netypovaných) se nezobrazuje.
+const selectedPlotDistance = usePlotDistance(
+  selectedShape,
+  computed(() => gardenStore.plot),
+  computed(() => uiStore.dragDelta),
+)
+
+// Dvě vodicí úsečky (vodorovná = vzdálenost v ose X, svislá = v ose Y) od
+// bounding boxu vybraného tvaru k nejbližší hraně pozemku, + popisky. Živé
+// i během tažení, protože selectedPlotDistance čte uiStore.dragDelta.
+const plotDistanceOverlay = computed(() => {
+  const shape = selectedShape.value
+  if (!shape || !PLOT_DISTANCE_TYPES.includes(shape.typeId) || !gardenStore.plot) return null
+  const b = selectedPlotDistance.liveBbox.value
+  const nearest = selectedPlotDistance.nearest.value
+  if (!b || !nearest) return null
+  const plotB = bboxOf(gardenStore.plot.points)
+  const cx = (b.minX + b.maxX) / 2
+  const cy = (b.minY + b.maxY) / 2
+
+  const objXEdge = nearest.x.side === 'levé'  ? b.minX : b.maxX
+  const plotXEdge = nearest.x.side === 'levé'  ? plotB.minX : plotB.maxX
+  const objYEdge = nearest.y.side === 'horní' ? b.minY : b.maxY
+  const plotYEdge = nearest.y.side === 'horní' ? plotB.minY : plotB.maxY
+
+  const warning = nearest.x.dist < 0 || nearest.y.dist < 0
+  const color = warning ? '#DC2626' : '#FF6B35'
+
+  return {
+    color,
+    xLine: {
+      points: [objXEdge * PPM, cy * PPM, plotXEdge * PPM, cy * PPM],
+      stroke: color, strokeWidth: 1.5, dash: [5, 4], listening: false,
+    },
+    xLabel: {
+      x: (objXEdge + plotXEdge) / 2 * PPM, y: cy * PPM - 16,
+      text: `${nearest.x.dist.toFixed(2)} m`, fontSize: 11, fontStyle: 'bold',
+      fill: color, stroke: '#fff', strokeWidth: 3, fillAfterStrokeEnabled: true, listening: false,
+    },
+    yLine: {
+      points: [cx * PPM, objYEdge * PPM, cx * PPM, plotYEdge * PPM],
+      stroke: color, strokeWidth: 1.5, dash: [5, 4], listening: false,
+    },
+    yLabel: {
+      x: cx * PPM + 6, y: (objYEdge + plotYEdge) / 2 * PPM,
+      text: `${nearest.y.dist.toFixed(2)} m`, fontSize: 11, fontStyle: 'bold',
+      fill: color, stroke: '#fff', strokeWidth: 3, fillAfterStrokeEnabled: true, listening: false,
+    },
+  }
+})
+
 // --- Object drag ---
+// Live delta jen čteme z Konva a ukládáme do uiStore (pro vodicí čáry k
+// hranici pozemku), nikdy nezapisujeme zpět do store shapes — to se stane
+// až v onObjectDragend, stejně jako dřív.
+function onObjectDragMove(payload) {
+  uiStore.setDragDelta(payload)
+}
 function onObjectDragend({ id, dx, dy }) {
   gardenStore.moveShape(id, dx, dy)
+  uiStore.clearDragDelta()
 }
 
 // --- Text resize (přes úchyt v TextHandles) ---
@@ -397,6 +560,19 @@ function onKeydown(e) {
   if (e.code === 'Space' && !spacePressed.value) {
     e.preventDefault(); spacePressed.value = true
   }
+  // Jemný posun vybraného tvaru šipkami. e.repeat se ignoruje záměrně — moveShape()
+  // volá plný _snapshot() (JSON kopie + zápis do undo historie) při KAŽDÉM volání,
+  // takže držení klávesy s OS auto-repeatem (~30-50ms) by historii během pár vteřin
+  // zaplavilo. Efekt: jeden posun na jeden fyzický stisk (stejně jako Figma/Illustrator).
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && uiStore.selectedId) {
+    if (e.repeat) return
+    e.preventDefault()
+    const base = uiStore.snapToGrid ? uiStore.gridSize : 0.05
+    const step = e.shiftKey ? base * 5 : base
+    const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
+    const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0
+    gardenStore.moveShape(uiStore.selectedId, dx, dy)
+  }
 }
 
 function onKeyup(e) {
@@ -435,25 +611,33 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="containerRef" class="w-full h-full bg-garden-50 select-none" :style="cursorStyle">
+  <div ref="containerRef" class="w-full h-full bg-garden-50 select-none touch-none" :style="cursorStyle">
     <v-stage
       ref="stageRef"
       :config="stageConfig"
       @wheel="onWheel"
-      @click="onStageClick"
-      @tap="onStageClick"
-      @mousedown="onMousedown"
-      @mouseup="onMouseup"
-      @mousemove="onMousemove"
-      @dblclick="onDblclick"
+      @pointerclick="onStageClick"
+      @pointerdown="onMousedown"
+      @pointerup="onMouseup"
+      @pointermove="onMousemove"
+      @pointerdblclick="onDblclick"
       @dragmove="onStageDragMove"
+      @touchstart="onTouchStart"
+      @touchmove="onTouchMove"
+      @touchend="onTouchEnd"
+      @touchcancel="onTouchEnd"
     >
       <!-- Grid (non-interactive) -->
       <v-layer :config="{ listening: false }">
         <template v-if="uiStore.showGrid">
           <v-line  v-for="(l,i) in gridLines"    :key="i"   :config="l" />
         </template>
-        <v-text    v-for="(l,i) in rulerLabels"  :key="'r'+i" :config="l" />
+      </v-layer>
+
+      <!-- Hranice pozemku (non-interactive, jen zobrazení — úprava = smazat + překreslit) -->
+      <v-layer :config="{ listening: false }">
+        <v-line v-if="plotLineConfig" :config="plotLineConfig" />
+        <v-text v-if="plotLabelConfig" :config="plotLabelConfig" />
       </v-layer>
 
       <!-- Shapes layer -->
@@ -467,6 +651,7 @@ onUnmounted(() => {
             :preview-font-size="textResizePreview && textResizePreview.id === s.id ? textResizePreview.fontSize : null"
             :preview-points="ellipseResizePreview && ellipseResizePreview.id === s.id ? ellipseResizePreview.points : null"
             @select="(uiStore.activeTool === 'select' || uiStore.activeTool === 'move') && uiStore.selectObject(s.id)"
+            @dragmove="onObjectDragMove"
             @dragend="onObjectDragend"
           />
           <!-- Vertex handles pro obecné polygony/obdélníky (ne text, ne elipsu/kruh) v select módu -->
@@ -496,6 +681,14 @@ onUnmounted(() => {
 
       <!-- Drawing preview layer -->
       <v-layer :config="{ listening: false }">
+        <!-- Vodicí čáry vzdálenosti od hranice pozemku (strom/keř/záhon) -->
+        <template v-if="plotDistanceOverlay">
+          <v-line :config="plotDistanceOverlay.xLine" />
+          <v-text :config="plotDistanceOverlay.xLabel" />
+          <v-line :config="plotDistanceOverlay.yLine" />
+          <v-text :config="plotDistanceOverlay.yLabel" />
+        </template>
+
         <!-- Rect preview -->
         <v-rect v-if="rectPreviewConfig" :config="rectPreviewConfig" />
 
@@ -547,6 +740,13 @@ onUnmounted(() => {
       </v-layer>
     </v-stage>
 
+    <!-- Pravítka pinnutá k okraji viewportu (nad obsahem plátna, jako ve Figmě) -->
+    <template v-if="uiStore.showGrid">
+      <RulerBar orientation="horizontal" :ticks="rulerTicksX" class="absolute top-0 left-0 right-0 h-6 z-10" />
+      <RulerBar orientation="vertical"   :ticks="rulerTicksY" class="absolute top-0 left-0 bottom-0 w-6 z-10" />
+      <div class="absolute top-0 left-0 w-6 h-6 bg-white/90 backdrop-blur-sm border-r border-b border-garden-200 z-20 pointer-events-none" />
+    </template>
+
     <!-- Nápověda pro aktivní nástroj -->
     <div class="absolute bottom-14 left-1/2 -translate-x-1/2 pointer-events-none select-none">
       <div v-if="uiStore.activeTool === 'rect' && !isDrawing" class="hint-bubble">
@@ -554,6 +754,12 @@ onUnmounted(() => {
       </div>
       <div v-else-if="(uiStore.activeTool === 'rect' || uiStore.activeTool === 'circle') && isDrawing" class="hint-bubble">
         Pusť myš pro dokončení · Podrž mezerník pro posun plátna
+      </div>
+      <div v-else-if="uiStore.drawTarget === 'plot' && !isDrawing" class="hint-bubble">
+        Hranice pozemku: klikej pro přidání vrcholů · Enter nebo 2× klik pro uzavření
+      </div>
+      <div v-else-if="uiStore.drawTarget === 'plot' && isDrawing" class="hint-bubble">
+        Hranice pozemku · {{ drawPoints.length / 2 }} vrcholů · Enter nebo 2× klik pro uzavření · Esc pro zrušení
       </div>
       <div v-else-if="uiStore.activeTool === 'polygon' && !isDrawing" class="hint-bubble">
         {{ uiStore.pendingLabel ? `${uiStore.pendingLabel}: ` : '' }}Klikej pro přidání vrcholů · Enter nebo 2× klik pro uzavření

@@ -1,12 +1,15 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { useUiStore } from '@/stores/uiStore'
 import { useGardenStore } from '@/stores/gardenStore'
 import { COLOR_PRESETS } from '@/constants/colorPresets'
 import { CATEGORIES, OBJECTS_BY_CATEGORY } from '@/constants/objectTypes'
+import { bboxOf } from '@/utils/shapes'
 
 const uiStore     = useUiStore()
 const gardenStore = useGardenStore()
+
+const plotSize = computed(() => gardenStore.plot ? bboxOf(gardenStore.plot.points) : null)
 
 const tools = [
   { id: 'select',  label: 'Výběr',       icon: '↖',  title: 'Vybrat objekt a upravit jeho vrcholy' },
@@ -33,7 +36,15 @@ function pickType(type) {
 </script>
 
 <template>
-  <aside class="w-48 flex-shrink-0 bg-white border-r border-garden-100 flex flex-col overflow-hidden text-xs">
+  <aside
+    class="fixed md:static inset-y-0 left-0 z-40 w-72 max-w-[85vw] md:w-48 md:max-w-none flex-shrink-0 bg-white border-r border-garden-100 flex flex-col overflow-hidden text-xs transform transition-transform duration-200 md:translate-x-0 shadow-xl md:shadow-none"
+    :class="uiStore.mobilePanel === 'tools' ? 'translate-x-0' : '-translate-x-full'"
+  >
+    <!-- Mobilní hlavička s tlačítkem zavřít (na desktopu panel nejde zavřít, netřeba) -->
+    <div class="md:hidden flex items-center justify-between px-3 py-2 bg-garden-700 text-white font-semibold">
+      Nástroje
+      <button class="px-2 py-0.5 rounded hover:bg-garden-600" @click="uiStore.closeMobilePanel()">✕</button>
+    </div>
 
     <div class="flex-1 overflow-y-auto">
       <!-- Nástroje -->
@@ -52,6 +63,35 @@ function pickType(type) {
           <span class="text-base leading-none">{{ tool.icon }}</span>
           {{ tool.label }}
         </button>
+      </div>
+
+      <!-- Pozemek (hranice) -->
+      <div class="px-3 py-2 bg-garden-700 text-white font-semibold uppercase tracking-wide">Pozemek</div>
+      <div class="p-2 border-b border-garden-100 space-y-1.5">
+        <button
+          v-if="!gardenStore.plot"
+          title="Nakreslit hranici pozemku — pak appka umí u stromů/keřů/záhonů ukázat vzdálenost k okraji"
+          class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-garden-50 text-garden-700 transition-colors"
+          @click="uiStore.startPlotDrawing()"
+        >
+          <span class="text-base leading-none">📐</span>
+          Nastavit hranici pozemku
+        </button>
+        <template v-else>
+          <div class="text-garden-500 px-1">~{{ plotSize.width.toFixed(1) }} × {{ plotSize.height.toFixed(1) }} m</div>
+          <div class="flex gap-1">
+            <button
+              title="Smazat starou hranici a nakreslit novou"
+              class="flex-1 px-2 py-1.5 rounded hover:bg-garden-50 text-garden-700 transition-colors"
+              @click="uiStore.startPlotDrawing()"
+            >✏️ Překreslit</button>
+            <button
+              title="Smazat hranici pozemku"
+              class="flex-1 px-2 py-1.5 rounded hover:bg-red-50 text-red-600 transition-colors"
+              @click="gardenStore.clearPlot()"
+            >🗑 Smazat</button>
+          </div>
+        </template>
       </div>
 
       <!-- Objekty (typy podle postupu: terén → stavby → zpevněné plochy → voda → rostliny → ostatní) -->

@@ -97,7 +97,8 @@ async function handleSaveAsNewDrive() {
 </script>
 
 <template>
-  <header class="h-11 flex items-center gap-1 px-3 bg-garden-700 text-white shadow-md flex-shrink-0 select-none">
+  <header class="h-11 flex items-center px-3 bg-garden-700 text-white shadow-md flex-shrink-0 select-none overflow-x-auto no-scrollbar">
+   <div class="flex items-center gap-1 w-full min-w-max">
     <!-- App name -->
     <div class="flex items-center gap-1.5 mr-3">
       <span class="text-base">🌿</span>
@@ -274,5 +275,6 @@ async function handleSaveAsNewDrive() {
         </button>
       </div>
     </div>
+   </div>
   </header>
 </template>

@@ -17,7 +17,7 @@ const props = defineProps({
   previewPoints:    { type: Array,   default: null },
 })
 
-const emit = defineEmits(['select', 'dragend'])
+const emit = defineEmits(['select', 'dragmove', 'dragend'])
 
 const uiStore = useUiStore()
 
@@ -67,6 +67,15 @@ const textConfig = computed(() => ({
   shadowOpacity: 0.6,
 }))
 
+// Během tažení jen ČTEME živou pozici uzlu a posíláme ji ven (pro náhled
+// vzdálenosti k hranici pozemku) — nikdy ji nezapisujeme zpět do configu
+// tohoto stejného uzlu, dokud ho Konva aktivně táhne (viz poučení v
+// PROJECT.md: echo vlastní pozice zpátky do taženého uzlu potichu shodí drag).
+function onDragMove(e) {
+  const node = e.target
+  emit('dragmove', { id: props.shape.id, dx: node.x() / props.ppm, dy: node.y() / props.ppm })
+}
+
 // Po přetažení tvaru: reset pozice uzlu na 0 a deleguj delta do store —
 // funguje, protože v-line má body zapečené v `points` a uzel sám je vždy na (0,0).
 function onDragEnd(e) {
@@ -101,6 +110,7 @@ function onTextDragEnd(e) {
     :config="lineConfig"
     @click="$emit('select')"
     @tap="$emit('select')"
+    @dragmove="onDragMove"
     @dragend="onDragEnd"
   />
 </template>

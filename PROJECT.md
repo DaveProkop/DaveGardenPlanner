@@ -31,18 +31,23 @@ src/
 ├── style.css                        # Tailwind imports
 │
 ├── constants/
-│   └── objectTypes.js               # Definice typů objektů (barva, kategorie, doporučený nástroj, textureKey)
+│   └── objectTypes.js               # Definice typů objektů (barva, kategorie, doporučený nástroj, textureKey) + PLOT_DISTANCE_TYPES
 │
 ├── stores/
-│   ├── gardenStore.js               # Hlavní state: shapes, undo/redo, autosave (žádný pevný "pozemek")
-│   ├── uiStore.js                   # UI state: vybraný objekt, aktivní nástroj/barva/textura/typ (preset)
+│   ├── gardenStore.js               # Hlavní state: shapes, plot (hranice pozemku), undo/redo, autosave
+│   ├── uiStore.js                   # UI state: vybraný objekt, aktivní nástroj/barva/textura/typ (preset), drawTarget, dragDelta
 │   └── fileSourceStore.js           # Naposledy otevřený/uložený soubor (lokální disk / Google Disk), orchestruje open/save
 │
 ├── config/
 │   └── google.js                    # Client ID / API klíč pro Google Disk (z env proměnných, viz sekce "Google Disk — nastavení")
 │
+├── composables/
+│   └── usePlotDistance.js           # Sdílený výpočet vzdálenosti tvaru od hranice pozemku (živě i během tažení) — PropertyEditor i GardenCanvas
+│
 ├── utils/
-│   ├── shapes.js                    # ellipsePoints() — aproximace kruhu/elipsy mnohoúhelníkem
+│   ├── shapes.js                    # ellipsePoints() — aproximace kruhu/elipsy mnohoúhelníkem; bboxOf() — bounding box bodů
+│   ├── plot.js                      # distanceToPlotEdge()/nearestEdge() — vzdálenost objektu od hran pozemku (bounding-box)
+│   ├── scale.js                     # pickFittingStep()/pickNiceStep() — "hezký" krok v metrech pro měřítko i pravítka
 │   ├── textures.js                  # getTexture(color, key) — procedurální dlaždice (Konva fillPatternImage), cachované
 │   ├── grid.js                      # snapValue()/snapStagePos() — přichytávání k mřížce (kreslení i tažení)
 │   ├── idbHandle.js                 # IndexedDB uložení posledního FileSystemFileHandle napříč reloady stránky
@@ -53,11 +58,12 @@ src/
     ├── toolbar/AppToolbar.vue       # Horní lišta: mřížka/přichytávání/hustota, undo/redo, kopírovat/vložit, aktivní nástroj, autosave indikátor, Otevřít/Uložit
     ├── ResumeSourceBanner.vue       # Banner "Pokračovat v naposledy otevřeném souboru?" nad canvasem
     ├── panels/
-    │   ├── ToolPanel.vue            # Levý panel: nástroje (Výběr/Přesun/Obdélník/Kruh-Elipsa/Polygon/Text) + typy objektů podle kategorií, barva
-    │   └── PropertyEditor.vue       # Pravý panel: editace vybraného tvaru (název/text, barva, textura, rozměry nebo velikost textu, poznámky, geometrie)
+    │   ├── ToolPanel.vue            # Levý panel: nástroje, hranice pozemku (nastavit/překreslit/smazat), typy objektů podle kategorií, barva
+    │   └── PropertyEditor.vue       # Pravý panel: editace vybraného tvaru (název, poznámky, typ, barva, textura, rozměry/stáří/poloha, vzdálenost od pozemku, geometrie); bez výběru = seskupený seznam objektů na plánu
     ├── canvas/
-    │   ├── GardenCanvas.vue         # Konva stage: mřížka (viditelná oblast), panning, zoom+měřítko, kreslení všech nástrojů, klávesnice (vč. Ctrl+C/V)
+    │   ├── GardenCanvas.vue         # Konva stage: mřížka (viditelná oblast), hranice pozemku, panning, zoom+měřítko, pravítka nahoře/vlevo, kreslení všech nástrojů, klávesnice (vč. Ctrl+C/V, šipky = jemný posun)
     │   ├── GardenObject.vue         # Jeden tvar na canvas — v-line polygon (texturou/barvou), nebo v-text pro kind:'text'
+    │   ├── RulerBar.vue             # Vykreslení jednoho pravítka (ticks+popisky) z předpočítaných pozic — matematika žije v GardenCanvas.vue
     │   ├── VertexHandles.vue        # Úchyty pro tažení jednotlivých vrcholů (obecné polygony/obdélníky)
     │   ├── EllipseHandles.vue       # 4 úchyty na krajích poloos — protažení šířky/výšky, tvar zůstává vždy elipsa/kruh
     │   └── TextHandles.vue          # Úchyt pro živé zvětšení/zmenšení textu (fontSize)
@@ -68,30 +74,35 @@ src/
 
 ## Datový model (JSON soubor)
 
-Od v1.1.0 jsou objekty freeform polygony (ne typované obdélníky s `width`/`height`/`rotation`):
+Od v1.1.0 jsou objekty freeform polygony (ne typované obdélníky s `width`/`height`/`rotation`). Od v1.4.0 přibyly `typeId`/`age` na jednotlivých tvarech a nepovinná hranice pozemku `plot` na nejvyšší úrovni:
 
 ```json
 {
-  "version": "1.1.0",
-  "savedAt": "2026-08-15T10:00:00.000Z",
+  "version": "1.4.0",
+  "savedAt": "2026-08-19T10:00:00.000Z",
   "shapes": [
     {
       "id": "uuid-v4",
       "name": "Strom",
       "color": "#228B22",
       "texture": "foliage",
+      "typeId": "tree",
+      "age": 7,
       "notes": "",
       "points": [8, 6, 8.9, 6.35, 9.24, 7.24, 8.9, 8.12, 8, 8.47, 7.09, 8.12, 6.75, 7.24, 7.09, 6.35]
     }
-  ]
+  ],
+  "plot": { "points": [0, 0, 20, 0, 20, 15, 0, 15] }
 }
 ```
 
-Žádný `plot` — pozemek jako pevná obdélníková definice byl odstraněn, plán nemá žádnou vnější hranici. `points` je plochý seznam `[x1,y1,x2,y2,...]` v **metrech**, vždy uzavřený polygon (kruh/elipsa nakreslená nástrojem Kruh/Elipsa je aproximovaná 8úhelníkem — `ellipsePoints()` v `utils/shapes.js`, záměrně málo vrcholů, ať jde tvar snadno ručně upravit tažením). Přepočet na pixely: `1 m = 50 px` (konstanta `PPM` v `GardenCanvas.vue`). Rozměry v pravém panelu (Šířka/Výška) se počítají z bounding boxu bodů a při editaci se jím celý tvar přeškáluje (`bbox`/`commitSize()` v `PropertyEditor.vue`).
+`points` je plochý seznam `[x1,y1,x2,y2,...]` v **metrech**, vždy uzavřený polygon (kruh/elipsa nakreslená nástrojem Kruh/Elipsa je aproximovaná 8úhelníkem — `ellipsePoints()` v `utils/shapes.js`, záměrně málo vrcholů, ať jde tvar snadno ručně upravit tažením). Přepočet na pixely: `1 m = 50 px` (konstanta `PPM` v `GardenCanvas.vue`). Rozměry a poloha v pravém panelu (Šířka/Výška, Poloha X/Y) se počítají z bounding boxu bodů (`bboxOf()` v `utils/shapes.js`) — Rozměry celý tvar přeškálují (`commitSize()`), Poloha ho posune (`commitPosition()` → `gardenStore.moveShape()`, stejná funkce jako u tažení/šipek).
 
 `texture` je klíč do `utils/textures.js` (`grass`/`brick`/`wood`/`stone`/`water`/`foliage`/`sand`/`glass`) nebo `null` pro tvary nakreslené bez vybraného typu objektu (ty mají jen plochou barvu). Texturu vykresluje `GardenObject.vue` jako `fillPatternImage` — dlaždice se generuje z aktuální barvy tvaru, takže respektuje i vlastní barvu z color pickeru.
 
 **`kind`** rozlišuje speciální chování tvaru: `null` = obecný polygon/obdélník (plné úpravy vrcholů), `'ellipse'` = kruh/elipsa nakreslená nástrojem Kruh/Elipsa (8 bodů, upravuje se jen přes 4 úchyty na krajích poloos — viz `EllipseHandles.vue` — tvar tak zůstává vždy skutečnou elipsou), `'text'` = volný text (viz níže). U `kind:'text'` mají `points` jen **jeden bod** `[x,y]` (ukotvení, ne polygon) a přibývá pole **`fontSize`** (velikost v metrech); `name` je zároveň zobrazovaný text na plátně. **Jméno objektu se u ostatních tvarů (ne text) na plátně nezobrazuje** — je jen pro identifikaci v pravém panelu.
+
+**`typeId`** (od v1.4.0) je klíč z `OBJECT_TYPES`, ze kterého byl tvar nakreslen (`uiStore.activePresetId` v okamžiku kreslení), nebo `null`/chybí u volně nakreslených tvarů bez zvoleného typu. Dá se kdykoliv dodatečně nastavit přes výběr "Typ objektu" v `PropertyEditor.vue` — jediný způsob, jak tvarům nakresleným před v1.4.0 (žádné `typeId` v uloženém souboru) zpřístupnit pole Stáří a vzdálenost od hranice pozemku. **`age`** (roky, číslo nebo `null`) se zobrazuje jen pro `typeId === 'tree'` nebo `'shrub'`.
 
 ---
 
@@ -144,9 +155,11 @@ Client ID ani API klíč nejsou tajné (jsou vidět ve zdrojovém kódu prohlí�
 
 ---
 
-## Mřížka, přichytávání a hustota
+## Mřížka, pravítka a hustota
 
-Aplikace nemá žádnou definici "pozemku" s pevnými rozměry — kreslicí plocha je neomezená. Mřížka (`gridLines`/`rulerLabels` v `GardenCanvas.vue`) se proto nepočítá jednou dopředu, ale z aktuálně viditelné oblasti (`viewBounds`, odvozeno z pozice/zoomu stage a rozměru okna), takže vždy pokrývá celý canvas, ať uživatel odjede/přiblíží kamkoliv. Pozice stage (`stagePos`) se sleduje reaktivně přes `@dragmove` na `v-stage` (pan myší) a při každém zoomu (kolečko i tlačítka +/−). Osy x=0/y=0 jsou zvýrazněné a nesou popisky vzdálenosti po 5 m; počátek (0,0) je při prvním načtení vycentrovaný uprostřed obrazovky.
+Aplikace nemá žádnou vynucenou definici "pozemku" s pevnými rozměry — kreslicí plocha je neomezená. Mřížka (`gridLines` v `GardenCanvas.vue`) se proto nepočítá jednou dopředu, ale z aktuálně viditelné oblasti (`viewBounds`, odvozeno z pozice/zoomu stage a rozměru okna), takže vždy pokrývá celý canvas, ať uživatel odjede/přiblíží kamkoliv. Pozice stage (`stagePos`) se sleduje reaktivně přes `@dragmove` na `v-stage` (pan myší) a při každém zoomu (kolečko i tlačítka +/−). Počátek (0,0) je při prvním načtení vycentrovaný uprostřed obrazovky.
+
+**Pravítka (od v1.4.0)** — dva HTML pruhy pinnuté k hornímu a levému okraji viewportu (`RulerBar.vue`, mimo `<v-stage>`, stejný vzor jako spodní lišta se zoomem/měřítkem), s popisky v metrech na každé "hezké" rysce (`rulerTicksX`/`rulerTicksY` v `GardenCanvas.vue`, krok vybírá `pickNiceStep()` z `utils/scale.js` tak, aby rozestup na obrazovce zůstal čitelný — min. 50 px — při libovolném zoomu). Nahradily starší `rulerLabels` (popisky jen podél os x=0/y=0 po pevných 5 m, viditelné jen v okolí počátku) — pravítka jsou naopak vždy vidět celá, po celé šířce/výšce viewportu, jako ve Figmě/Illustratoru. Skryjí se spolu s mřížkou (`uiStore.showGrid`).
 
 **Hustota mřížky** (`uiStore.gridSize`, výběr v `AppToolbar.vue` z `GRID_SIZES = [0.25, 0.5, 1, 2, 5]` metrů) mění rozestup čar; hlavní (tmavší) čára je vždy každá 5. vedlejší.
 
@@ -155,6 +168,20 @@ Aplikace nemá žádnou definici "pozemku" s pevnými rozměry — kreslicí plo
 - při tažení celého objektu nebo úchytu (`GardenObject.vue`, `VertexHandles.vue`) — přes `snapStagePos()`, což je Konva `dragBoundFunc` počítající v absolutních (obrazovkových) souřadnicích s ohledem na aktuální pan/zoom stage.
 
 Text a úchyty pro elipsu/font se **nepřichytávají** (volný drag) — snap dává smysl jen pro geometrii vázanou na metry.
+
+---
+
+## Pozemek a vzdálenosti (od v1.4.0)
+
+Hranice pozemku je **volitelná** a kdykoliv překreslitelná/smazatelná — na rozdíl od v1.0.0 appka nikdy nevynucuje její zadání před kreslením. Slouží jednomu účelu: u stromů/keřů/záhonů interaktivně ukázat vzdálenost od nejbližší hrany pozemku.
+
+- **Kreslení**: tlačítko "📐 Nastavit hranici pozemku" v sekci "Pozemek" (`ToolPanel.vue`, `uiStore.startPlotDrawing()`) přepne na nástroj Polygon s `uiStore.drawTarget = 'plot'` — klikání po vrcholech + Enter/dvojklik funguje identicky jako běžný polygon, jen výsledek jde do `gardenStore.setPlot(points)` místo `addShape()`. Hranice je samostatný stav `gardenStore.plot` (`{ points } | null`), **ne** položka v `shapes[]` — Ctrl+C/V, Delete klávesa a nový seznam objektů (viz níže) se jí proto nemůžou nechtěně dotknout. Ruční přepnutí nástroje nebo Esc kdykoliv rozkreslenou hranici zruší (`setTool()` vždy resetuje `drawTarget`). Úprava existující hranice = smazat + překreslit (tlačítka "✏️ Překreslit"/"🗑 Smazat"), žádné tažení vrcholů.
+- **Vykreslení**: přerušovaná tmavě zelená čára + popisek "Hranice pozemku" (`plotLineConfig`/`plotLabelConfig` v `GardenCanvas.vue`), ve vlastní vrstvě nad mřížkou, pod tvary.
+- **Vzdálenost**: počítá se z **bounding boxů** (ne skutečné nejbližší hrany polygonu) — `utils/plot.js` (`distanceToPlotEdge()`, `nearestEdge()`), sdíleno přes `composables/usePlotDistance.js`. Jen pro `typeId` `'tree'`/`'shrub'`/`'bed'` (`PLOT_DISTANCE_TYPES` v `constants/objectTypes.js`): číselný readout v `PropertyEditor.vue` (vzdálenost k nejbližší svislé i vodorovné hraně, se stranou — "vlevo"/"vpravo"/"nahoře"/"dole"; záporná = objekt přesahuje hranici, zvýrazněno červeně) + dvě přerušované vodicí čáry s popisky na plátně. **Živé i během tažení** (nástroj Přesun) — `GardenObject.vue` čte živou pozici taženého uzlu v `@dragmove` (jen čtení, nikdy zápis zpět do configu právě taženého uzlu, viz poučení níže) a posílá ji do `uiStore.dragDelta`, ze kterého `usePlotDistance()` dopočítá posunutý bounding box bez zásahu do `gardenStore` (ten se zapíše až na `dragend`, stejně jako dřív).
+
+**Poloha objektu** — nové pole "Poloha (m)" X/Y v `PropertyEditor.vue` (`bboxOf(shape.points).minX/minY`, commit přes `gardenStore.moveShape()`) umožňuje přesně nastavit/posunout objekt číselně, nejen tažením. **Šipky** (při vybraném objektu, mimo textová pole) posunou o `gridSize` (se Shift ×5) — `onKeydown` v `GardenCanvas.vue` záměrně ignoruje `e.repeat`, protože `moveShape()` zapisuje plný snapshot do (50položkové) undo historie při každém volání a držení klávesy by ji OS auto-repeatem za pár vteřin zaplavilo; efekt je "jeden posun na jeden fyzický stisk", stejně jako v Figmě/Illustratoru.
+
+**Seznam objektů** — prázdný stav pravého panelu (dřív jen placeholder "Vyber objekt") teď zobrazuje všechny `gardenStore.shapes` seskupené podle kategorie (`OBJECT_TYPES[s.typeId]?.category`), s vlastní skupinou "Vlastní tvary" pro tvary bez `typeId`. Klik na položku vybírá objekt (`uiStore.selectObject(id)` **bez** `{ focusName: true }` — nesmí krást focus, viz `focusNameTick` níže).
 
 ---
 
@@ -220,6 +247,7 @@ Rozměry lze kdykoliv doladit přesně v pravém panelu (pole Šířka/Výška v
 | Ctrl+C         | Kopírovat vybraný objekt |
 | Ctrl+V         | Vložit zkopírovaný objekt (posunutý o 0,5 m, název + " (kopie)") |
 | Delete/Backspace | Smazat vybraný objekt  |
+| Šipky (←↑→↓)   | Posunout vybraný objekt o krok mřížky (Shift = ×5) |
 | Mouse wheel    | Zoom in/out              |
 | Drag (canvas)  | Posun pohledu (pan) — v nástroji Výběr vždy, v ostatních nástrojích jen s podrženým mezerníkem |
 | Mezerník (podržet) | Dočasný posun plátna i uprostřed kreslení (obdélník/kruh/polygon) |
@@ -276,11 +304,15 @@ Rozměry lze kdykoliv doladit přesně v pravém panelu (pole Šířka/Výška v
 - Export jako PNG/SVG obrázek
 - Více plánů (tabs)
 
+### ✅ Mobilní ovladatelnost — hotovo (v1.5.0)
+- Boční panely jako vysouvací drawery pod 768px šířky, canvas na celou šířku
+- Kreslení/výběr/tažení na dotyk (Konva pointer eventy místo mouse-only)
+- Pinch-to-zoom + dvouprstý pan
+
 ### Etapa 3 — Pokročilé funkce
 - Databáze rostlin (latinské názvy, požadavky)
 - Companion planting (vhodné kombinace)
 - Sezonní pohled (jaro/léto/podzim/zima)
-- Mobilní optimalizace (dotykové gesta)
 
 ---
 
@@ -302,3 +334,5 @@ Rozměry lze kdykoliv doladit přesně v pravém panelu (pole Šířka/Výška v
 | 2026-08-17 | —     | Nový nástroj **Text** (`kind:'text'`) — volný popisek s vlastní `EllipseHandles`-podobnou logikou úchytu na zvětšení/zmenšení (`TextHandles.vue`, `fontSize`), přesouvatelný jako ostatní tvary. Jméno objektu se u ostatních tvarů přestalo zobrazovat na plátně (zůstává jen v panelu) — u textu ho nahradilo pole "Text", které JE zobrazovaný obsah. Autosave indikátor v toolbaru (`gardenStore.lastSavedAt`, tečka blikne při uložení). |
 | 2026-08-17 | —     | Kopírování/vkládání (Ctrl+C/V + tlačítka). Kruh/elipsa přestala jít deformovat tažením vrcholů — `EllipseHandles.vue` nahradil `VertexHandles.vue` čtyřmi úchyty na krajích poloos, tvar tak zůstává matematicky vždy elipsou (viz sekce výše). Oprava: výběr JAKÉHOKOLIV objektu (i klikem na existující) kradl focus do pole Název/Text (`watch(selectedId)` v `PropertyEditor.vue`), takže klávesové zkratky jako Ctrl+C/V přestaly fungovat — `uiStore.selectObject()` teď zaostřuje pole jen s explicitním `{ focusName: true }`, volaným jen při vytvoření NOVÉHO tvaru, ne při obyčejném výběru. |
 | 2026-08-19 | 1.3.0 | Otevírání souborů z lokálního disku (File System Access API + fallback) a z Google Disku (OAuth + Picker), s pamatováním naposledy otevřeného souboru mezi návštěvami (`fileSourceStore.js`, `ResumeSourceBanner.vue`). "Uložit" teď zapisuje zpět do navázaného souboru místo vždy stahovat novou kopii. `useStorage.js` composable smazán (nahrazen `fileSourceStore`). Google Disk vyžaduje jednorázové nastavení Client ID/API klíče vlastníkem projektu — viz "Google Disk — nastavení". |
+| 2026-08-19 | 1.4.0 | **Hranice pozemku + vzdálenosti** (volitelná, kreslí se jako polygon — viz sekce "Pozemek a vzdálenosti"): nový `gardenStore.plot`, tlačítka v `ToolPanel.vue`, živé vodicí čáry na plátně i číselný readout v `PropertyEditor.vue` pro strom/keř/záhon. **`typeId`/`age`** na tvarech — appka si teď pamatuje, ze kterého presetu byl tvar nakreslen (dřív se to po nakreslení zapomnělo), s dodatečným "Typ objektu" selectem pro starší tvary. **Poloha (m) X/Y** pole + **šipky** pro jemný posun vybraného objektu (`e.repeat` záměrně ignorováno, ať nezaplaví undo historii). **Pravítka** nahoře/vlevo (`RulerBar.vue`) nahradila starou mřížkovou "rulerLabels" (popisky jen kolem počátku) — teď jsou vidět po celé šířce/výšce plátna při libovolném zoomu. **Seznam objektů** v prázdném stavu pravého panelu (seskupený podle kategorie). Poznámky přesunuty v `PropertyEditor.vue` hned pod název. |
+| 2026-08-20 | 1.5.0 | **Mobilní ovladatelnost.** Appka dřív na úzké obrazovce (<768px) nešla vůbec používat — pevně řazený 3sloupcový layout (`ToolPanel` + canvas + `PropertyEditor`) nechal canvasu prakticky nulovou šířku, a kreslicí nástroje (`GardenCanvas.vue`) byly navázané jen na myší eventy (`mousedown`/`mouseup`/`mousemove`/`dblclick`), které se na dotyku vůbec nespouští. Pod `md` (768px) jsou teď oba boční panely překryvné drawery (`uiStore.mobilePanel`: `null`/`'tools'`/`'properties'`) vysouvané přes dva plovoucí úchyty na okraji canvasu (`App.vue`) — zavírají se křížkem, klikem na zástěnu, nebo automaticky (výběr nástroje zavře Nástroje, výběr objektu otevře Vlastnosti). Nad `md` beze změny, žádná regrese na desktopu. Stage bindingy přepnuty na Konva sjednocené pointer eventy (`@pointerdown`/`@pointermove`/`@pointerup`/`@pointerclick`/`@pointerdblclick` — fungují stejně pro myš i dotyk, nahradily dosavadní mouse-only bindingy i ruční dvojbind `@click`+`@tap`), takže kreslení obdélníku/kruhu/polygonu i umístění textu teď funguje i prstem. Přidán pinch-to-zoom + dvouprstý pan (`onTouchStart`/`onTouchMove`/`onTouchEnd` na stage, standardní Konva multi-touch recept přepočtený na souřadnice kontejneru přes `getBoundingClientRect()`) — na mobilu chybí kolečko myši i mezerník pro dočasný pan. Zvětšená dotyková plocha úchytů (`hitStrokeWidth` 12→16 ve `VertexHandles`/`EllipseHandles`/`TextHandles`) a horizontálně scrollovatelná horní lišta (`AppToolbar.vue`, `.no-scrollbar` v `style.css`), ať se na úzké obrazovce žádné tlačítko neztratí. |

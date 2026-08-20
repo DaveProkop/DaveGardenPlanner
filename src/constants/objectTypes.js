@@ -45,3 +45,7 @@ export const OBJECTS_BY_CATEGORY = Object.values(OBJECT_TYPES).reduce((acc, type
   acc[type.category].push(type)
   return acc
 }, {})
+
+// Typy, u kterých má smysl počítat/zobrazovat vzdálenost od hranice pozemku
+// (viz gardenStore.plot, utils/plot.js, composables/usePlotDistance.js).
+export const PLOT_DISTANCE_TYPES = ['tree', 'shrub', 'bed']

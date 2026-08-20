@@ -58,7 +58,7 @@ function handleConfig(h) {
     stroke:      '#FF6B35',
     strokeWidth: 2,
     draggable:   true,
-    hitStrokeWidth: 12,
+    hitStrokeWidth: 16,
     dragBoundFunc: makeDragBoundFunc(h),
   }
 }

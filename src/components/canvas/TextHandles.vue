@@ -53,7 +53,7 @@ function onDragEnd(e)  { emit('resizeend', { id: props.shape.id, fontSize: compu
       stroke: '#FF6B35',
       strokeWidth: 2,
       draggable: true,
-      hitStrokeWidth: 12,
+      hitStrokeWidth: 16,
     }"
     @dragmove="onDragMove"
     @dragend="onDragEnd"

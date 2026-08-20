@@ -37,7 +37,7 @@ function handleConfig(h) {
     strokeWidth: 2,
     draggable:   true,
     dragBoundFunc,
-    hitStrokeWidth: 12,
+    hitStrokeWidth: 16,
   }
 }
 
@@ -88,7 +88,7 @@ function midHandleConfig(m) {
     dash:        [2, 2],
     draggable:   true,
     dragBoundFunc,
-    hitStrokeWidth: 12,
+    hitStrokeWidth: 16,
   }
 }
 

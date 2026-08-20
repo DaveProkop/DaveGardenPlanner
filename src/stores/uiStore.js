@@ -16,21 +16,48 @@ export const useUiStore = defineStore('ui', () => {
   const snapToGrid        = ref(true)     // přichytávat kreslení/tažení k mřížce
   const gridSize          = ref(1)        // rozestup mřížky v metrech
   const clipboard         = ref(null)     // zkopírovaná data objektu (bez id) pro Ctrl+V, nebo null
+  const drawTarget        = ref('shape')  // 'shape' (běžný addShape) | 'plot' (příští rect/circle/polygon commit jde do gardenStore.setPlot)
+  const dragDelta         = ref(null)     // { id, dx, dy } | null — živý (ještě nezapsaný) posun taženého tvaru, pro vzdálenost k hranici pozemku
   const focusNameTick     = ref(0)        // inkrementuje se jen při výběru NOVĚ vytvořeného objektu —
                                            // PropertyEditor na to zareaguje zaostřením pole Název/Text.
                                            // Obyčejný klik na existující objekt focus nekrade (jinak by
                                            // ukradl focus canvasu a přestaly by fungovat klávesové zkratky).
+  const mobilePanel       = ref(null)     // null | 'tools' | 'properties' — který boční panel je na
+                                           // úzké obrazovce (pod md) vysunutý jako překryvný drawer.
+                                           // Na desktopu (md+) je bez efektu, panely jsou tam vždy vidět.
 
   function selectObject(id, { focusName = false } = {}) {
     selectedId.value = id
     if (focusName) focusNameTick.value++
+    if (id) mobilePanel.value = 'properties'
   }
-  function deselect()       { selectedId.value = null }
-  function setTool(tool)    { activeTool.value = tool }
+  function deselect() {
+    selectedId.value = null
+    if (mobilePanel.value === 'properties') mobilePanel.value = null
+  }
+  // Ruční přepnutí nástroje vždy zruší rozkreslený pozemek (viz startPlotDrawing) —
+  // i Escape prochází přes setTool('select'), takže tohle stačí jako jediné místo resetu.
+  function setTool(tool) {
+    activeTool.value = tool
+    drawTarget.value = 'shape'
+    if (mobilePanel.value === 'tools') mobilePanel.value = null
+  }
+  function openMobilePanel(name) { mobilePanel.value = mobilePanel.value === name ? null : name }
+  function closeMobilePanel()    { mobilePanel.value = null }
   function setColor(color)  { activeColor.value = color; activePresetId.value = null }
   function toggleGrid()     { showGrid.value = !showGrid.value }
   function toggleSnap()     { snapToGrid.value = !snapToGrid.value }
   function setGridSize(size) { gridSize.value = size }
+
+  // Aktivuje nástroj Polygon, ale příští dokončený tvar zapíše do gardenStore.plot
+  // (hranice pozemku) místo běžného gardenStore.addShape.
+  function startPlotDrawing() {
+    setTool('polygon')
+    drawTarget.value = 'plot'
+  }
+
+  function setDragDelta(payload) { dragDelta.value = payload }
+  function clearDragDelta()      { dragDelta.value = null }
 
   // Uloží snímek tvaru do schránky — kopíruje se stav v okamžiku zkopírování,
   // takže vložení funguje i po smazání/úpravě originálu.
@@ -48,6 +75,7 @@ export const useUiStore = defineStore('ui', () => {
     pendingLabel.value   = type.label
     activePresetId.value = type.id
     activeTool.value     = type.shape === 'circle' || type.shape === 'polygon' ? type.shape : 'rect'
+    if (mobilePanel.value === 'tools') mobilePanel.value = null
   }
 
   // Zruší vybraný typ objektu — použije se při ručním přepnutí na obecný nástroj.
@@ -59,9 +87,10 @@ export const useUiStore = defineStore('ui', () => {
 
   return {
     selectedId, activeTool, activeColor, activeTexture, pendingLabel, activePresetId,
-    showGrid, snapToGrid, gridSize, clipboard, focusNameTick,
+    showGrid, snapToGrid, gridSize, clipboard, focusNameTick, drawTarget, dragDelta, mobilePanel,
     selectObject, deselect, setTool, setColor, toggleGrid, toggleSnap, setGridSize, copyShape,
-    selectObjectType, clearPreset,
+    selectObjectType, clearPreset, startPlotDrawing, setDragDelta, clearDragDelta,
+    openMobilePanel, closeMobilePanel,
   }
 })
 
