@@ -15,6 +15,11 @@ const props = defineProps({
   // Živé body během tažení úchytu v EllipseHandles — dokud se netáhne, je
   // null a použijí se natrvalo uložené shape.points.
   previewPoints:    { type: Array,   default: null },
+  // Živý posun { dx, dy } v metrech pro OSTATNÍ členy skupinového výběru,
+  // zatímco jeden z nich (jiný uzel) právě táhne uživatel — viz GardenCanvas
+  // groupDragPreview. Na rozdíl od previewPoints se nikdy neaplikuje na uzel,
+  // který Konva zrovna sama táhne (ten by se rozbil, viz poučení v PROJECT.md).
+  previewOffset:    { type: Object,   default: null },
 })
 
 const emit = defineEmits(['select', 'dragmove', 'dragend'])
@@ -27,11 +32,23 @@ function dragBoundFunc(pos) {
   return uiStore.snapToGrid ? snapStagePos(pos, this.getStage(), props.ppm, uiStore.gridSize) : pos
 }
 
+// Efektivní body tvaru — přednost má náhled tvarování (previewPoints, resize
+// úchyty), jinak živý posun skupinového tažení (previewOffset), jinak reálná
+// uložená data.
+const effectivePoints = computed(() => {
+  if (props.previewPoints) return props.previewPoints
+  if (props.previewOffset) {
+    const { dx, dy } = props.previewOffset
+    return props.shape.points.map((v, i) => i % 2 === 0 ? v + dx : v + dy)
+  }
+  return props.shape.points
+})
+
 // Konva body polygonu v pixelech
 const lineConfig = computed(() => {
   const base = {
     id:          props.shape.id,
-    points:      (props.previewPoints ?? props.shape.points).map(v => v * props.ppm),
+    points:      effectivePoints.value.map(v => v * props.ppm),
     stroke:      props.selected ? '#FF6B35' : 'rgba(0,0,0,0.22)',
     strokeWidth: props.selected ? 2.5 : 1,
     closed:      true,
@@ -53,8 +70,8 @@ const lineConfig = computed(() => {
 // kde se název na plátně nezobrazuje).
 const textConfig = computed(() => ({
   id:          props.shape.id,
-  x:           props.shape.points[0] * props.ppm,
-  y:           props.shape.points[1] * props.ppm,
+  x:           effectivePoints.value[0] * props.ppm,
+  y:           effectivePoints.value[1] * props.ppm,
   text:        props.shape.name || 'Text',
   fontSize:    (props.previewFontSize ?? props.shape.fontSize ?? 1) * props.ppm,
   fontFamily:  'system-ui, sans-serif',
@@ -101,15 +118,15 @@ function onTextDragEnd(e) {
   <v-text
     v-if="shape.kind === 'text'"
     :config="textConfig"
-    @click="$emit('select')"
-    @tap="$emit('select')"
+    @click="$emit('select', $event)"
+    @tap="$emit('select', $event)"
     @dragend="onTextDragEnd"
   />
   <v-line
     v-else
     :config="lineConfig"
-    @click="$emit('select')"
-    @tap="$emit('select')"
+    @click="$emit('select', $event)"
+    @tap="$emit('select', $event)"
     @dragmove="onDragMove"
     @dragend="onDragEnd"
   />

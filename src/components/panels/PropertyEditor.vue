@@ -5,7 +5,7 @@ import { useUiStore }     from '@/stores/uiStore'
 import { COLOR_PRESETS }  from '@/constants/colorPresets'
 import { getTexture, TEXTURE_KEYS } from '@/utils/textures'
 import { bboxOf }         from '@/utils/shapes'
-import { OBJECT_TYPES, CATEGORIES, PLOT_DISTANCE_TYPES } from '@/constants/objectTypes'
+import { OBJECT_TYPES, CATEGORIES } from '@/constants/objectTypes'
 import { usePlotDistance } from '@/composables/usePlotDistance'
 
 const TEXTURE_LABELS = {
@@ -63,6 +63,33 @@ function deleteShape() {
   uiStore.deselect()
 }
 
+// --- Multi-select (víc vybraných objektů najednou) ---
+// Pole pro hromadnou úpravu — na rozdíl od `local` výše se nepředvyplňují
+// z existující hodnoty (vybrané objekty mají typicky různý název/poznámky),
+// jen se při odeslání aplikují na všechny vybrané.
+const bulkLocal = ref({ name: '', notes: '' })
+// Reset polí při každé změně SLOŽENÍ výběru (ne jen délky) — ať rozepsaný
+// text nezůstane viset po přepnutí na jiné objekty.
+const selectionKey = computed(() => [...uiStore.selectedIds].sort().join(','))
+watch(selectionKey, () => { bulkLocal.value = { name: '', notes: '' } })
+
+function commitBulkName() {
+  const name = bulkLocal.value.name.trim()
+  if (!name) return
+  gardenStore.updateShapes(uiStore.selectedIds, { name })
+}
+function commitBulkColor(color) {
+  gardenStore.updateShapes(uiStore.selectedIds, { color })
+  uiStore.setColor(color)
+}
+function commitBulkNotes() {
+  gardenStore.updateShapes(uiStore.selectedIds, { notes: bulkLocal.value.notes })
+}
+function deleteSelection() {
+  gardenStore.removeShapes(uiStore.selectedIds)
+  uiStore.deselect()
+}
+
 // Náhledy textur v aktuální barvě tvaru — přegenerují se při změně barvy
 const texturePreviews = computed(() => {
   if (!shape.value) return []
@@ -116,9 +143,8 @@ function commitPosition() {
   gardenStore.moveShape(shape.value.id, dx, dy)
 }
 
-// --- Vzdálenost od hranice pozemku (jen tree/shrub/bed, jen když pozemek existuje) ---
+// --- Vzdálenost od hranice pozemku (libovolný objekt, přepínatelné uiStore.showPlotDistance) ---
 const plotDistance = usePlotDistance(shape, computed(() => gardenStore.plot), computed(() => uiStore.dragDelta))
-const showsPlotDistance = computed(() => shape.value && PLOT_DISTANCE_TYPES.includes(shape.value.typeId))
 
 function commitSize() {
   if (!shape.value) return
@@ -377,15 +403,15 @@ function shapeIcon(s) {
         <span class="text-garden-400 block mt-1">Nebo táhni (nástroj Přesun) · šipky = jemný posun vybraného objektu</span>
       </div>
 
-      <!-- Vzdálenost od hranice pozemku (jen strom/keř/záhon) -->
-      <div v-if="showsPlotDistance" class="bg-garden-50 rounded p-2 space-y-0.5 text-garden-600">
+      <!-- Vzdálenost od hranice pozemku (libovolný objekt — přepínač "📏 Vzdálenosti" v horní liště) -->
+      <div v-if="uiStore.showPlotDistance" class="bg-garden-50 rounded p-2 space-y-1 text-garden-600">
         <div class="font-medium text-garden-700 mb-1">Vzdálenost od hranice pozemku</div>
-        <template v-if="plotDistance.nearest.value">
-          <div :class="plotDistance.nearest.value.x.dist < 0 ? 'text-red-600 font-medium' : ''">
-            Osa X: {{ plotDistance.nearest.value.x.dist.toFixed(2) }} m od {{ plotDistance.nearest.value.x.side }} hrany
-          </div>
-          <div :class="plotDistance.nearest.value.y.dist < 0 ? 'text-red-600 font-medium' : ''">
-            Osa Y: {{ plotDistance.nearest.value.y.dist.toFixed(2) }} m od {{ plotDistance.nearest.value.y.side }} hrany
+        <template v-if="plotDistance.distance.value">
+          <div class="grid grid-cols-2 gap-x-2 gap-y-0.5">
+            <div :class="plotDistance.distance.value.top < 0 ? 'text-red-600 font-medium' : ''">↑ Nahoru: {{ plotDistance.distance.value.top.toFixed(2) }} m</div>
+            <div :class="plotDistance.distance.value.bottom < 0 ? 'text-red-600 font-medium' : ''">↓ Dolů: {{ plotDistance.distance.value.bottom.toFixed(2) }} m</div>
+            <div :class="plotDistance.distance.value.left < 0 ? 'text-red-600 font-medium' : ''">← Doleva: {{ plotDistance.distance.value.left.toFixed(2) }} m</div>
+            <div :class="plotDistance.distance.value.right < 0 ? 'text-red-600 font-medium' : ''">→ Doprava: {{ plotDistance.distance.value.right.toFixed(2) }} m</div>
           </div>
         </template>
         <div v-else class="text-garden-400">Nastav hranici pozemku (vlevo) pro zobrazení vzdálenosti k okraji.</div>
@@ -409,6 +435,79 @@ function shapeIcon(s) {
         @click="deleteShape"
       >
         Smazat objekt
+      </button>
+    </div>
+  </aside>
+
+  <!-- Víc objektů vybráno najednou (multi-select) -->
+  <aside
+    v-else-if="uiStore.selectedIds.length > 1"
+    class="fixed md:static inset-y-0 right-0 z-40 w-72 max-w-[85vw] md:w-56 md:max-w-none flex-shrink-0 bg-white border-l border-garden-100 flex flex-col overflow-hidden text-xs transform transition-transform duration-200 md:translate-x-0 shadow-xl md:shadow-none"
+    :class="uiStore.mobilePanel === 'properties' ? 'translate-x-0' : 'translate-x-full'"
+  >
+    <div class="px-3 py-2 bg-garden-700 text-white font-semibold flex items-center gap-2">
+      <span class="flex-1">{{ uiStore.selectedIds.length }} objektů vybráno</span>
+      <button class="md:hidden px-2 py-0.5 rounded hover:bg-garden-600 flex-shrink-0" @click="uiStore.closeMobilePanel()">✕</button>
+    </div>
+
+    <div class="flex-1 overflow-y-auto px-3 py-3 space-y-4">
+      <label class="block">
+        <span class="text-garden-700 font-medium block mb-1">Přejmenovat vše na</span>
+        <input
+          v-model="bulkLocal.name"
+          type="text"
+          placeholder="Nový název pro všechny..."
+          class="w-full border border-garden-200 rounded px-2 py-1.5 focus:outline-none focus:border-garden-500"
+          @blur="commitBulkName"
+          @keydown.enter="commitBulkName(); $event.target.blur()"
+        />
+      </label>
+
+      <div>
+        <span class="text-garden-700 font-medium block mb-1">Barva (pro všechny)</span>
+        <div class="grid grid-cols-4 gap-1 mb-2">
+          <button
+            v-for="p in COLOR_PRESETS"
+            :key="p.color"
+            :title="p.label"
+            class="w-7 h-7 rounded border-2 border-transparent transition-all hover:scale-110"
+            :style="{ backgroundColor: p.color }"
+            @click="commitBulkColor(p.color)"
+          />
+        </div>
+        <label class="flex items-center gap-2">
+          <input
+            type="color"
+            value="#3A7D34"
+            class="w-7 h-7 rounded border border-garden-200 p-0.5 cursor-pointer flex-shrink-0"
+            @change="commitBulkColor($event.target.value)"
+          />
+          <span class="text-garden-500">Vlastní barva</span>
+        </label>
+      </div>
+
+      <label class="block">
+        <span class="text-garden-700 font-medium block mb-1">Poznámky (přepíší se u všech)</span>
+        <textarea
+          v-model="bulkLocal.notes"
+          rows="3"
+          placeholder="Poznámky pro všechny vybrané..."
+          class="w-full border border-garden-200 rounded px-2 py-1.5 focus:outline-none focus:border-garden-500 resize-none"
+          @blur="commitBulkNotes"
+        />
+      </label>
+
+      <div class="bg-garden-50 rounded p-2 text-garden-500">
+        Přesun: přetáhni kterýkoli vybraný objekt (nástroj Přesun) nebo použij šipky · Shift+klik na objekt = přidat/odebrat z výběru
+      </div>
+    </div>
+
+    <div class="px-3 py-2 border-t border-garden-100">
+      <button
+        class="w-full py-1.5 rounded bg-red-50 hover:bg-red-100 text-red-600 font-medium transition-colors"
+        @click="deleteSelection"
+      >
+        Smazat {{ uiStore.selectedIds.length }} objektů
       </button>
     </div>
   </aside>

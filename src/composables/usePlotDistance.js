@@ -1,6 +1,6 @@
 import { computed } from 'vue'
 import { bboxOf } from '@/utils/shapes'
-import { distanceToPlotEdge, nearestEdge } from '@/utils/plot'
+import { distanceToPlotEdge } from '@/utils/plot'
 
 // Sdílený výpočet vzdálenosti vybraného tvaru od hranice pozemku, použitý jak
 // v PropertyEditor.vue (číselný readout), tak v GardenCanvas.vue (vodicí čáry
@@ -31,7 +31,5 @@ export function usePlotDistance(shapeRef, plotRef, dragDeltaRef) {
     return distanceToPlotEdge(liveBbox.value, bboxOf(plot.points))
   })
 
-  const nearest = computed(() => distance.value ? nearestEdge(distance.value) : null)
-
-  return { liveBbox, distance, nearest }
+  return { liveBbox, distance }
 }

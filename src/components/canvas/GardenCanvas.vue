@@ -6,7 +6,6 @@ import { ellipsePoints, bboxOf } from '@/utils/shapes'
 import { snapValue }      from '@/utils/grid'
 import { pickNiceStep, pickFittingStep } from '@/utils/scale'
 import { usePlotDistance } from '@/composables/usePlotDistance'
-import { PLOT_DISTANCE_TYPES } from '@/constants/objectTypes'
 import GardenObject    from './GardenObject.vue'
 import VertexHandles   from './VertexHandles.vue'
 import TextHandles     from './TextHandles.vue'
@@ -27,13 +26,31 @@ const containerW   = ref(800)
 const containerH   = ref(600)
 const stagePos     = ref({ x: 0, y: 0 }) // aktuální pozice stage (pan), sledováno pro nekonečnou mřížku
 const spacePressed = ref(false) // podržený mezerník = dočasný posun i uprostřed kreslení
+const stageDragging = ref(false) // aktivní tažení SAMOTNÉ stage (pan) — pro kurzor "grabbing"
+
+// Prostřední tlačítko myši smí posouvat plátno VŽDY, bez ohledu na aktivní
+// nástroj (řeší, že v kreslicích nástrojích/při definici hranice pozemku
+// není prázdné plátno jinak tažením dostupné k posunu) — levé tlačítko jen
+// ve Výběru/Přesunu, nebo kdekoliv při podrženém mezerníku. `Konva.dragButtons`
+// je globální nastavení knihovny přesně pro tenhle účel (které tlačítko smí
+// zahájit tažení draggable uzlu). Musí se sahat na `window.Konva` (ne na
+// vlastní `import Konva from 'konva'`) — v tomto Vite dev prostředí je ES
+// import samostatná kopie modulu, jejíž mutace se nikam nepropíše; `window.Konva`
+// je prokazatelně ten samý singleton, který interně používá běžící Stage
+// (ověřeno přes `window.Konva.stages[0]`, viz i testovací poznámky v PROJECT.md).
+watch(
+  () => uiStore.activeTool === 'select' || uiStore.activeTool === 'move' || spacePressed.value,
+  (leftCanPan) => { window.Konva.dragButtons = leftCanPan ? [0, 1] : [1] },
+  { immediate: true },
+)
 
 // --- Stage config ---
 const stageConfig = computed(() => ({
   width:     containerW.value,
   height:    containerH.value,
-  // pan ve Výběru vždy, jinak jen při podrženém mezerníku (ať nekreslení nepřekáží)
-  draggable: uiStore.activeTool === 'select' || spacePressed.value,
+  // Vždy draggable — které tlačítko tažení skutečně smí zahájit, řídí
+  // Konva.dragButtons výše (jinak by prostřední tlačítko nemělo co posouvat).
+  draggable: true,
 }))
 
 function onStageDragMove(e) {
@@ -43,6 +60,17 @@ function onStageDragMove(e) {
   const stage = stageRef.value?.getStage()
   if (!stage || e.target !== stage) return
   stagePos.value = { x: stage.x(), y: stage.y() }
+}
+
+// Kurzor "grabbing" jen během skutečného tažení SAMOTNÉ stage (pan) — stejná
+// bublavá past jako u onStageDragMove výše (e.target může být vnořený uzel).
+function onStageDragStart(e) {
+  const stage = stageRef.value?.getStage()
+  if (stage && e.target === stage) stageDragging.value = true
+}
+function onStageDragEnd(e) {
+  const stage = stageRef.value?.getStage()
+  if (stage && e.target === stage) stageDragging.value = false
 }
 
 // --- Mřížka přes celou (neomezenou) kreslicí plochu ---
@@ -132,6 +160,10 @@ const drawPoints     = ref([])          // flat [x1,y1,...] v metrech (polygon)
 const dragStart      = ref(null)        // { x, y } v metrech (obdélník i kruh/elipsa — tažením bbox)
 const cursorPos      = ref({ x:0, y:0 }) // v metrech, pro preview
 
+// --- Marquee (rámečkový) výběr víc objektů — vlastní nástroj 'marquee'.
+const isMarqueeSelecting = ref(false)
+const marqueeStart        = ref(null)   // { x, y } v metrech
+
 // Pozice v metrech ze Konva stage eventu, přichycená k mřížce (pokud je zapnuto)
 function getMeterPos() {
   const stage = stageRef.value.getStage()
@@ -151,8 +183,22 @@ function isBackground(target) {
 
 // --- Mouse handlers ---
 function onMousedown(e) {
+  // Jen levé tlačítko kreslí/vybírá/vytváří rámeček — prostřední řeší posun
+  // plátna nativně přes Konva.dragButtons (viz výše), pravé necháno prohlížeči.
+  // `button` u dotykových/syntetických eventů bývá `undefined` — to musí projít.
+  if (e.evt.button != null && e.evt.button !== 0) return
   if (spacePressed.value) return // posun plátna má přednost před kreslením
   const tool = uiStore.activeTool
+
+  // Nástroj Výběr rámečkem: tažení KDEKOLI (i nad objektem) kreslí výběrový
+  // rámeček — klik bez tažení projde dál na GardenObject/@select díky
+  // malému prahu v onMouseup, viz tam.
+  if (tool === 'marquee') {
+    marqueeStart.value    = getMeterPos()
+    isMarqueeSelecting.value = true
+    return
+  }
+
   if (tool === 'select' || tool === 'move') return
 
   // V kreslicím režimu objekty nejsou draggable, takže klik i nad existujícím
@@ -195,6 +241,30 @@ function onMousemove() {
 }
 
 function onMouseup(e) {
+  if (isMarqueeSelecting.value) {
+    const { x, y } = getMeterPos()
+    const { x: sx, y: sy } = marqueeStart.value
+    const x0 = Math.min(sx,x), y0 = Math.min(sy,y)
+    const x1 = Math.max(sx,x), y1 = Math.max(sy,y)
+    isMarqueeSelecting.value = false
+    marqueeStart.value       = null
+    // Malý práh proti tomu, aby obyčejný klik (bez tažení) omylem vybral
+    // objekt, jehož bbox náhodou leží přesně pod kurzorem.
+    if (x1-x0 > 0.15 || y1-y0 > 0.15) {
+      const ids = gardenStore.shapes
+        .filter(s => {
+          const b = bboxOf(s.points)
+          return b.minX <= x1 && b.maxX >= x0 && b.minY <= y1 && b.maxY >= y0
+        })
+        .map(s => s.id)
+      uiStore.selectMultiple(ids)
+      // Konva po pointerup na stejném cíli sám vystřelí "click" — bez tohle
+      // by onStageClick nově vybraný rámeček hned zase odselectoval.
+      suppressNextClick = true
+    }
+    return
+  }
+
   const tool = uiStore.activeTool
   if ((tool !== 'rect' && tool !== 'circle') || !isDrawing.value) return
 
@@ -228,9 +298,18 @@ function onDblclick() {
 let suppressNextClick = false
 function onStageClick(e) {
   if (suppressNextClick) { suppressNextClick = false; return }
-  if (uiStore.activeTool === 'select' && isBackground(e.target)) {
+  const tool = uiStore.activeTool
+  if ((tool === 'select' || tool === 'move' || tool === 'marquee') && isBackground(e.target)) {
     uiStore.deselect()
   }
+}
+
+// Klik na objekt v nástroji Výběr/Přesun/Výběr rámečkem — shift/ctrl+klik
+// přidá/odebere objekt z výběru místo jeho nahrazení (multi-select), viz
+// uiStore.selectObject.
+function onObjectSelect(id, e) {
+  const additive = !!(e?.evt?.shiftKey || e?.evt?.ctrlKey || e?.evt?.metaKey)
+  uiStore.selectObject(id, { additive })
 }
 
 function _commitPolygon() {
@@ -323,9 +402,29 @@ const ellipsePreviewConfig = computed(() => {
   }
 })
 
+// Preview pro rámeček multi-výběru (nástroj Přesun, tažení po prázdném plátně)
+const marqueePreviewConfig = computed(() => {
+  if (!isMarqueeSelecting.value || !marqueeStart.value) return null
+  const { x: sx, y: sy } = marqueeStart.value
+  const { x: cx, y: cy } = cursorPos.value
+  return {
+    x:      Math.min(sx,cx) * PPM,
+    y:      Math.min(sy,cy) * PPM,
+    width:  Math.abs(cx-sx) * PPM,
+    height: Math.abs(cy-sy) * PPM,
+    fill:   'rgba(59,130,246,0.12)',
+    stroke: '#3B82F6',
+    strokeWidth: 1,
+    dash:        [4, 3],
+    listening:   false,
+  }
+})
+
 // Kurzor CSS
 const cursorStyle = computed(() => ({
-  cursor: spacePressed.value
+  cursor: stageDragging.value
+    ? 'grabbing'
+    : spacePressed.value
     ? 'grab'
     : uiStore.activeTool === 'select' ? 'default'
     : uiStore.activeTool === 'move'   ? 'move'
@@ -444,54 +543,48 @@ const scaleBar = computed(() => {
 })
 
 // --- Vzdálenost vybraného tvaru od hranice pozemku ---
-// Jen pro strom/keř/záhon (PLOT_DISTANCE_TYPES) — u ostatních typů (i netypovaných) se nezobrazuje.
+// Pro libovolný vybraný objekt (dřív jen strom/keř/záhon) — zapíná/vypíná se
+// přepínačem uiStore.showPlotDistance (AppToolbar). Zobrazuje se jak na
+// plátně (tady), tak v pravém panelu (PropertyEditor), obojí čte stejný
+// composable, aby čísla vždy seděla.
 const selectedPlotDistance = usePlotDistance(
   selectedShape,
   computed(() => gardenStore.plot),
   computed(() => uiStore.dragDelta),
 )
 
-// Dvě vodicí úsečky (vodorovná = vzdálenost v ose X, svislá = v ose Y) od
-// bounding boxu vybraného tvaru k nejbližší hraně pozemku, + popisky. Živé
-// i během tažení, protože selectedPlotDistance čte uiStore.dragDelta.
+// Čtyři vodicí úsečky (nahoru/dolů/doleva/doprava) od bounding boxu vybraného
+// tvaru ke KAŽDÉ hraně pozemku, + popisky. Živé i během tažení, protože
+// selectedPlotDistance čte uiStore.dragDelta.
+function _plotGuide(value, x1, y1, x2, y2, vertical) {
+  const color = value < 0 ? '#DC2626' : '#FF6B35'
+  const midX  = (x1 + x2) / 2, midY = (y1 + y2) / 2
+  return {
+    line: { points: [x1*PPM, y1*PPM, x2*PPM, y2*PPM], stroke: color, strokeWidth: 1.5, dash: [5, 4], listening: false },
+    label: {
+      x: midX*PPM + (vertical ? 6 : 0), y: midY*PPM - (vertical ? 0 : 14),
+      text: `${value.toFixed(2)} m`, fontSize: 11, fontStyle: 'bold',
+      fill: color, stroke: '#fff', strokeWidth: 3, fillAfterStrokeEnabled: true, listening: false,
+    },
+  }
+}
+
 const plotDistanceOverlay = computed(() => {
+  if (!uiStore.showPlotDistance) return null
   const shape = selectedShape.value
-  if (!shape || !PLOT_DISTANCE_TYPES.includes(shape.typeId) || !gardenStore.plot) return null
+  if (!shape || !gardenStore.plot) return null
   const b = selectedPlotDistance.liveBbox.value
-  const nearest = selectedPlotDistance.nearest.value
-  if (!b || !nearest) return null
+  const dist = selectedPlotDistance.distance.value
+  if (!b || !dist) return null
   const plotB = bboxOf(gardenStore.plot.points)
   const cx = (b.minX + b.maxX) / 2
   const cy = (b.minY + b.maxY) / 2
 
-  const objXEdge = nearest.x.side === 'levé'  ? b.minX : b.maxX
-  const plotXEdge = nearest.x.side === 'levé'  ? plotB.minX : plotB.maxX
-  const objYEdge = nearest.y.side === 'horní' ? b.minY : b.maxY
-  const plotYEdge = nearest.y.side === 'horní' ? plotB.minY : plotB.maxY
-
-  const warning = nearest.x.dist < 0 || nearest.y.dist < 0
-  const color = warning ? '#DC2626' : '#FF6B35'
-
   return {
-    color,
-    xLine: {
-      points: [objXEdge * PPM, cy * PPM, plotXEdge * PPM, cy * PPM],
-      stroke: color, strokeWidth: 1.5, dash: [5, 4], listening: false,
-    },
-    xLabel: {
-      x: (objXEdge + plotXEdge) / 2 * PPM, y: cy * PPM - 16,
-      text: `${nearest.x.dist.toFixed(2)} m`, fontSize: 11, fontStyle: 'bold',
-      fill: color, stroke: '#fff', strokeWidth: 3, fillAfterStrokeEnabled: true, listening: false,
-    },
-    yLine: {
-      points: [cx * PPM, objYEdge * PPM, cx * PPM, plotYEdge * PPM],
-      stroke: color, strokeWidth: 1.5, dash: [5, 4], listening: false,
-    },
-    yLabel: {
-      x: cx * PPM + 6, y: (objYEdge + plotYEdge) / 2 * PPM,
-      text: `${nearest.y.dist.toFixed(2)} m`, fontSize: 11, fontStyle: 'bold',
-      fill: color, stroke: '#fff', strokeWidth: 3, fillAfterStrokeEnabled: true, listening: false,
-    },
+    top:    _plotGuide(dist.top,    cx, b.minY, cx, plotB.minY, true),
+    bottom: _plotGuide(dist.bottom, cx, b.maxY, cx, plotB.maxY, true),
+    left:   _plotGuide(dist.left,   b.minX, cy, plotB.minX, cy, false),
+    right:  _plotGuide(dist.right,  b.maxX, cy, plotB.maxX, cy, false),
   }
 })
 
@@ -499,12 +592,29 @@ const plotDistanceOverlay = computed(() => {
 // Live delta jen čteme z Konva a ukládáme do uiStore (pro vodicí čáry k
 // hranici pozemku), nikdy nezapisujeme zpět do store shapes — to se stane
 // až v onObjectDragend, stejně jako dřív.
+//
+// Táhne-li se objekt, který je součástí aktuálního multi-výběru, musí se
+// OSTATNÍ vybrané objekty vizuálně hýbat se stejným delta hned během tažení
+// (groupDragPreview) — jinak to na plátně vypadá, že se hýbe jen jeden.
+// Bezpečné jen proto, že se zapisuje do configu JINÝCH uzlů, ne toho, co
+// Konva zrovna aktivně táhne (viz previewOffset v GardenObject.vue a starší
+// poučení v PROJECT.md o rozbití Konva DnD echem vlastní pozice).
+const groupDragPreview = ref(null) // { leaderId, dx, dy } | null
+
 function onObjectDragMove(payload) {
   uiStore.setDragDelta(payload)
+  if (uiStore.selectedIds.length > 1 && uiStore.selectedIds.includes(payload.id)) {
+    groupDragPreview.value = { leaderId: payload.id, dx: payload.dx, dy: payload.dy }
+  }
 }
 function onObjectDragend({ id, dx, dy }) {
-  gardenStore.moveShape(id, dx, dy)
+  // Táhne-li se objekt, který je součástí aktuálního multi-výběru, posunout
+  // o stejné delta všechny vybrané (skupinový přesun) — jinak jen tento jeden.
+  const ids = uiStore.selectedIds.includes(id) ? uiStore.selectedIds : [id]
+  if (ids.length > 1) gardenStore.moveShapes(ids, dx, dy)
+  else gardenStore.moveShape(id, dx, dy)
   uiStore.clearDragDelta()
+  groupDragPreview.value = null
 }
 
 // --- Text resize (přes úchyt v TextHandles) ---
@@ -541,17 +651,20 @@ function onKeydown(e) {
     isDrawing.value = false; drawPoints.value = []; dragStart.value = null
     uiStore.setTool('select'); uiStore.clearPreset()
   }
-  if ((e.key === 'Delete' || e.key === 'Backspace') && uiStore.selectedId) {
-    gardenStore.removeShape(uiStore.selectedId); uiStore.deselect()
+  if ((e.key === 'Delete' || e.key === 'Backspace') && uiStore.selectedIds.length) {
+    gardenStore.removeShapes(uiStore.selectedIds); uiStore.deselect()
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'c' && uiStore.selectedId) {
-    e.preventDefault(); uiStore.copyShape(gardenStore.getShape(uiStore.selectedId))
+  if ((e.ctrlKey || e.metaKey) && e.key === 'c' && uiStore.selectedIds.length) {
+    e.preventDefault()
+    uiStore.copySelection(uiStore.selectedIds.map(id => gardenStore.getShape(id)).filter(Boolean))
   }
   if ((e.ctrlKey || e.metaKey) && e.key === 'v' && uiStore.clipboard) {
     e.preventDefault()
-    const id = gardenStore.pasteShape(uiStore.clipboard)
-    uiStore.selectObject(id)
-    uiStore.setTool('select')
+    const ids = gardenStore.pasteShapes(uiStore.clipboard)
+    uiStore.selectMultiple(ids)
+    // Nástroj Přesun musí po vložení zůstat aktivní (ať jde rovnou vložený
+    // objekt přetáhnout) — na Výběr se přepne jen když bylo aktivní kreslení.
+    if (uiStore.activeTool !== 'move') uiStore.setTool('select')
   }
   if (e.key === 'Enter' && uiStore.activeTool === 'polygon' && isDrawing.value && drawPoints.value.length >= 6) {
     e.preventDefault(); _commitPolygon()
@@ -564,14 +677,14 @@ function onKeydown(e) {
   // volá plný _snapshot() (JSON kopie + zápis do undo historie) při KAŽDÉM volání,
   // takže držení klávesy s OS auto-repeatem (~30-50ms) by historii během pár vteřin
   // zaplavilo. Efekt: jeden posun na jeden fyzický stisk (stejně jako Figma/Illustrator).
-  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && uiStore.selectedId) {
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key) && uiStore.selectedIds.length) {
     if (e.repeat) return
     e.preventDefault()
     const base = uiStore.snapToGrid ? uiStore.gridSize : 0.05
     const step = e.shiftKey ? base * 5 : base
     const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
     const dy = e.key === 'ArrowUp'   ? -step : e.key === 'ArrowDown'  ? step : 0
-    gardenStore.moveShape(uiStore.selectedId, dx, dy)
+    gardenStore.moveShapes(uiStore.selectedIds, dx, dy)
   }
 }
 
@@ -621,7 +734,9 @@ onUnmounted(() => {
       @pointerup="onMouseup"
       @pointermove="onMousemove"
       @pointerdblclick="onDblclick"
+      @dragstart="onStageDragStart"
       @dragmove="onStageDragMove"
+      @dragend="onStageDragEnd"
       @touchstart="onTouchStart"
       @touchmove="onTouchMove"
       @touchend="onTouchEnd"
@@ -646,11 +761,12 @@ onUnmounted(() => {
           <GardenObject
             :shape="s"
             :ppm="PPM"
-            :selected="s.id === uiStore.selectedId"
+            :selected="uiStore.selectedIds.includes(s.id)"
             :draggable="uiStore.activeTool === 'move'"
             :preview-font-size="textResizePreview && textResizePreview.id === s.id ? textResizePreview.fontSize : null"
             :preview-points="ellipseResizePreview && ellipseResizePreview.id === s.id ? ellipseResizePreview.points : null"
-            @select="(uiStore.activeTool === 'select' || uiStore.activeTool === 'move') && uiStore.selectObject(s.id)"
+            :preview-offset="groupDragPreview && s.id !== groupDragPreview.leaderId && uiStore.selectedIds.includes(s.id) ? { dx: groupDragPreview.dx, dy: groupDragPreview.dy } : null"
+            @select="(uiStore.activeTool === 'select' || uiStore.activeTool === 'move' || uiStore.activeTool === 'marquee') && onObjectSelect(s.id, $event)"
             @dragmove="onObjectDragMove"
             @dragend="onObjectDragend"
           />
@@ -681,13 +797,20 @@ onUnmounted(() => {
 
       <!-- Drawing preview layer -->
       <v-layer :config="{ listening: false }">
-        <!-- Vodicí čáry vzdálenosti od hranice pozemku (strom/keř/záhon) -->
+        <!-- Vodicí čáry vzdálenosti vybraného objektu od hranice pozemku (nahoru/dolů/doleva/doprava) -->
         <template v-if="plotDistanceOverlay">
-          <v-line :config="plotDistanceOverlay.xLine" />
-          <v-text :config="plotDistanceOverlay.xLabel" />
-          <v-line :config="plotDistanceOverlay.yLine" />
-          <v-text :config="plotDistanceOverlay.yLabel" />
+          <v-line :config="plotDistanceOverlay.top.line" />
+          <v-text :config="plotDistanceOverlay.top.label" />
+          <v-line :config="plotDistanceOverlay.bottom.line" />
+          <v-text :config="plotDistanceOverlay.bottom.label" />
+          <v-line :config="plotDistanceOverlay.left.line" />
+          <v-text :config="plotDistanceOverlay.left.label" />
+          <v-line :config="plotDistanceOverlay.right.line" />
+          <v-text :config="plotDistanceOverlay.right.label" />
         </template>
+
+        <!-- Rámeček multi-výběru -->
+        <v-rect v-if="marqueePreviewConfig" :config="marqueePreviewConfig" />
 
         <!-- Rect preview -->
         <v-rect v-if="rectPreviewConfig" :config="rectPreviewConfig" />
@@ -753,19 +876,19 @@ onUnmounted(() => {
         {{ uiStore.pendingLabel ? `${uiStore.pendingLabel}: klikni a táhni pro nakreslení` : 'Klikni a táhni pro nakreslení obdélníku' }}
       </div>
       <div v-else-if="(uiStore.activeTool === 'rect' || uiStore.activeTool === 'circle') && isDrawing" class="hint-bubble">
-        Pusť myš pro dokončení · Podrž mezerník pro posun plátna
+        Pusť myš pro dokončení · Mezerník nebo prostřední tlačítko myši = posun plátna
       </div>
       <div v-else-if="uiStore.drawTarget === 'plot' && !isDrawing" class="hint-bubble">
-        Hranice pozemku: klikej pro přidání vrcholů · Enter nebo 2× klik pro uzavření
+        Hranice pozemku: klikej pro přidání vrcholů · Enter nebo 2× klik pro uzavření · Mezerník nebo prostřední tlačítko myši = posun plátna
       </div>
       <div v-else-if="uiStore.drawTarget === 'plot' && isDrawing" class="hint-bubble">
-        Hranice pozemku · {{ drawPoints.length / 2 }} vrcholů · Enter nebo 2× klik pro uzavření · Esc pro zrušení
+        Hranice pozemku · {{ drawPoints.length / 2 }} vrcholů · Enter nebo 2× klik pro uzavření · Esc pro zrušení · Mezerník/prostřední tlačítko = posun
       </div>
       <div v-else-if="uiStore.activeTool === 'polygon' && !isDrawing" class="hint-bubble">
         {{ uiStore.pendingLabel ? `${uiStore.pendingLabel}: ` : '' }}Klikej pro přidání vrcholů · Enter nebo 2× klik pro uzavření
       </div>
       <div v-else-if="uiStore.activeTool === 'polygon' && isDrawing" class="hint-bubble">
-        {{ drawPoints.length / 2 }} vrcholů · Enter nebo 2× klik pro uzavření · Esc pro zrušení · Mezerník = posun
+        {{ drawPoints.length / 2 }} vrcholů · Enter nebo 2× klik pro uzavření · Esc pro zrušení · Mezerník/prostřední tlačítko = posun
       </div>
       <div v-else-if="uiStore.activeTool === 'circle' && !isDrawing" class="hint-bubble">
         {{ uiStore.pendingLabel ? `${uiStore.pendingLabel}: klikni a táhni pro nakreslení` : 'Klikni a táhni pro nakreslení kruhu/elipsy' }}
@@ -773,8 +896,14 @@ onUnmounted(() => {
       <div v-else-if="uiStore.activeTool === 'text'" class="hint-bubble">
         Klikni na plán pro umístění textu
       </div>
+      <div v-else-if="uiStore.activeTool === 'marquee'" class="hint-bubble">
+        Táhni pro výběr rámečkem · klik na objekt vybere jen jeho · Shift+klik = přidat/odebrat z výběru
+      </div>
+      <div v-else-if="uiStore.activeTool === 'move' && uiStore.selectedIds.length > 1" class="hint-bubble">
+        {{ uiStore.selectedIds.length }} objektů vybráno · táhni kterýkoli pro společný přesun · Shift+klik = přidat/odebrat z výběru
+      </div>
       <div v-else-if="uiStore.activeTool === 'move'" class="hint-bubble">
-        Táhni objekt pro přesun · v nástroji Výběr se objekty nepřesouvají omylem
+        Táhni objekt pro přesun · prázdné plátno = posun plátna · Shift+klik = přidat do výběru
       </div>
       <div v-else-if="uiStore.activeTool === 'select' && selectedShape && selectedShape.kind === 'ellipse'" class="hint-bubble">
         Táhni bílé úchyty pro protažení do šířky/výšky · tvar zůstane kruh/elipsa · přesné rozměry uprav vpravo

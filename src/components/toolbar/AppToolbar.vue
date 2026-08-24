@@ -71,15 +71,15 @@ const saveTooltip = computed(() => {
 })
 
 function copySelected() {
-  const shape = gardenStore.getShape(uiStore.selectedId)
-  if (shape) uiStore.copyShape(shape)
+  const shapes = uiStore.selectedIds.map(id => gardenStore.getShape(id)).filter(Boolean)
+  uiStore.copySelection(shapes)
 }
 
 function pasteClipboard() {
   if (!uiStore.clipboard) return
-  const id = gardenStore.pasteShape(uiStore.clipboard)
-  uiStore.selectObject(id)
-  uiStore.setTool('select')
+  const ids = gardenStore.pasteShapes(uiStore.clipboard)
+  uiStore.selectMultiple(ids)
+  if (uiStore.activeTool !== 'move') uiStore.setTool('select')
 }
 
 async function handleOpenLocal() {
@@ -168,6 +168,16 @@ async function handleOverwriteDrive() {
       🧲 Přichytávání
     </button>
 
+    <!-- Vzdálenost vybraného objektu od hranice pozemku (nahoru/dolů/doleva/doprava) -->
+    <button
+      class="flex items-center gap-1 px-2 py-1 rounded text-xs transition-colors"
+      :class="uiStore.showPlotDistance ? 'bg-garden-500 hover:bg-garden-400' : 'hover:bg-garden-600 text-garden-200'"
+      title="Zobrazit/skrýt vzdálenost vybraného objektu od hranice pozemku"
+      @click="uiStore.togglePlotDistance()"
+    >
+      📏 Vzdálenosti
+    </button>
+
     <!-- Grid density -->
     <select
       class="bg-garden-600 hover:bg-garden-500 text-white text-xs rounded px-1.5 py-1 border border-garden-500 focus:outline-none cursor-pointer"
@@ -202,9 +212,9 @@ async function handleOverwriteDrive() {
 
     <!-- Kopírovat / Vložit -->
     <button
-      :disabled="!uiStore.selectedId"
+      :disabled="!uiStore.selectedIds.length"
       class="px-2 py-1 rounded text-xs hover:bg-garden-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      title="Kopírovat vybraný objekt (Ctrl+C)"
+      title="Kopírovat vybrané objekty (Ctrl+C)"
       @click="copySelected"
     >
       📋 Kopírovat
@@ -212,7 +222,7 @@ async function handleOverwriteDrive() {
     <button
       :disabled="!uiStore.clipboard"
       class="px-2 py-1 rounded text-xs hover:bg-garden-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-      title="Vložit zkopírovaný objekt (Ctrl+V)"
+      title="Vložit zkopírované objekty (Ctrl+V)"
       @click="pasteClipboard"
     >
       📄 Vložit
@@ -224,6 +234,7 @@ async function handleOverwriteDrive() {
       <template v-if="uiStore.activePresetId">✏️ {{ uiStore.pendingLabel }}</template>
       <template v-else-if="uiStore.activeTool === 'select'">↖ Výběr</template>
       <template v-else-if="uiStore.activeTool === 'move'">✥ Přesun</template>
+      <template v-else-if="uiStore.activeTool === 'marquee'">⬚ Výběr rámečkem</template>
       <template v-else-if="uiStore.activeTool === 'rect'">⬜ Obdélník</template>
       <template v-else-if="uiStore.activeTool === 'circle'">⬭ Kruh/Elipsa</template>
       <template v-else>⬡ Polygon</template>

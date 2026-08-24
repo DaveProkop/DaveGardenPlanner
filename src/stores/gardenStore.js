@@ -61,14 +61,18 @@ export const useGardenStore = defineStore('garden', () => {
     return id
   }
 
-  // Vloží kopii dříve zkopírovaného tvaru (viz uiStore.copyShape) mírně
-  // posunutou stranou, ať nesedí přesně na originálu.
-  function pasteShape(data, offset = 0.5) {
-    const id = uuidv4()
-    const points = data.points.map(v => v + offset)
-    shapes.value.push({ ...JSON.parse(JSON.stringify(data)), id, name: `${data.name} (kopie)`, points })
+  // Vloží kopie dříve zkopírovaných tvarů (viz uiStore.copySelection) mírně
+  // posunuté stranou, ať nesedí přesně na originálu. Jeden snapshot pro celou
+  // dávku, takže vložení víc objektů najednou je jeden krok zpět/vpřed.
+  function pasteShapes(dataArray, offset = 0.5) {
+    const ids = dataArray.map(data => {
+      const id = uuidv4()
+      const points = data.points.map(v => v + offset)
+      shapes.value.push({ ...JSON.parse(JSON.stringify(data)), id, name: `${data.name} (kopie)`, points })
+      return id
+    })
     _snapshot()
-    return id
+    return ids
   }
 
   function updateShape(changes) {
@@ -78,11 +82,30 @@ export const useGardenStore = defineStore('garden', () => {
     _snapshot()
   }
 
+  // Hromadná úprava společných polí (barva, název, poznámky, ...) víc tvarů
+  // najednou (multi-select bulk edit) — jeden snapshot pro celou dávku.
+  function updateShapes(ids, changes) {
+    const set = new Set(ids)
+    shapes.value.forEach(s => { if (set.has(s.id)) Object.assign(s, changes) })
+    _snapshot()
+  }
+
   // Posunout celý tvar o (dx, dy) metrů
   function moveShape(id, dx, dy) {
     const s = shapes.value.find(s => s.id === id)
     if (!s) return
     s.points = s.points.map((v, i) => i % 2 === 0 ? v + dx : v + dy)
+    _snapshot()
+  }
+
+  // Posunout víc tvarů zároveň o stejné (dx, dy) metrů (skupinový přesun při
+  // tažení/šipkách s aktivním multi-select) — jeden snapshot pro celou dávku.
+  function moveShapes(ids, dx, dy) {
+    const set = new Set(ids)
+    shapes.value.forEach(s => {
+      if (!set.has(s.id)) return
+      s.points = s.points.map((v, i) => i % 2 === 0 ? v + dx : v + dy)
+    })
     _snapshot()
   }
 
@@ -124,11 +147,18 @@ export const useGardenStore = defineStore('garden', () => {
     _snapshot()
   }
 
+  // Smaže víc tvarů najednou (multi-select) — jeden snapshot pro celou dávku.
+  function removeShapes(ids) {
+    const set = new Set(ids)
+    shapes.value = shapes.value.filter(s => !set.has(s.id))
+    _snapshot()
+  }
+
   function getShape(id) { return shapes.value.find(s => s.id === id) }
 
   // --- Pozemek (hranice) ---
   // Samostatný stav mimo shapes — ať se ho nemůže dotknout Ctrl+C/V ani Delete
-  // (obě pracují jen přes uiStore.selectedId → shapes[]), a ať je počet objektů
+  // (obě pracují jen přes uiStore.selectedIds → shapes[]), a ať je počet objektů
   // v gardenStore.shapes.length i nový seznam objektů čistý bez filtrování.
   function setPlot(points) {
     plot.value = { points: [...points] }
@@ -182,7 +212,7 @@ export const useGardenStore = defineStore('garden', () => {
   return {
     shapes, plot, lastSavedAt,
     canUndo, canRedo, undo, redo,
-    addShape, addText, pasteShape, updateShape, moveShape, updateVertex, insertVertex, removeVertex, removeShape, getShape,
+    addShape, addText, pasteShapes, updateShape, updateShapes, moveShape, moveShapes, updateVertex, insertVertex, removeVertex, removeShape, removeShapes, getShape,
     setPlot, clearPlot,
     toData, loadFromData, init,
   }

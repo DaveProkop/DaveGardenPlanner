@@ -10,10 +10,3 @@ export function distanceToPlotEdge(objBbox, plotBbox) {
     bottom: plotBbox.maxY - objBbox.maxY,
   }
 }
-
-// Vybere pro danou osu bližší ze dvou protilehlých hran + její stranu (pro popisek).
-export function nearestEdge(distance) {
-  const x = distance.left <= distance.right ? { side: 'levé',  dist: distance.left  } : { side: 'pravé', dist: distance.right }
-  const y = distance.top  <= distance.bottom ? { side: 'horní', dist: distance.top } : { side: 'dolní', dist: distance.bottom }
-  return { x, y }
-}

@@ -13,7 +13,8 @@ const plotSize = computed(() => gardenStore.plot ? bboxOf(gardenStore.plot.point
 
 const tools = [
   { id: 'select',  label: 'Výběr',       icon: '↖',  title: 'Vybrat objekt a upravit jeho vrcholy' },
-  { id: 'move',    label: 'Přesun',      icon: '✥',  title: 'Přesunout objekt tažením' },
+  { id: 'move',    label: 'Přesun',      icon: '✥',  title: 'Přesunout objekt tažením · Shift+klikem lze přidat víc objektů do výběru' },
+  { id: 'marquee', label: 'Výběr rámečkem', icon: '⬚', title: 'Táhni pro výběr víc objektů rámečkem' },
   { id: 'rect',    label: 'Obdélník',    icon: '⬜',  title: 'Nakreslit obdélník tažením' },
   { id: 'circle',  label: 'Kruh/Elipsa', icon: '⬭',  title: 'Nakreslit kruh nebo elipsu tažením' },
   { id: 'polygon', label: 'Polygon',     icon: '⬡',  title: 'Kreslit tvar po vrcholech' },
